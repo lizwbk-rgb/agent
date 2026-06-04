@@ -107,11 +107,10 @@ class Config(BaseModel):
                 }
             },
             "embedder": {
-                "provider": "sentence_transformer",
+                "provider": "huggingface",
                 "config": {
-                    "model_name": "all-MiniLM-L6-v2",
-                    "device": config.DEVICE,
-                    "normalize_embeddings": True
+                    "model": "sentence-transformers/all-MiniLM-L6-v2",
+                    "device": config.DEVICE
                 }
             },
             "vector_store": {
