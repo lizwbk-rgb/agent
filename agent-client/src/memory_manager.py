@@ -393,7 +393,7 @@ class MemoryManager:
         Returns:
             List[Memory]: 按相关性排序的记忆列表
         """
-        return self.store.search(query, limit, self.user_id)
+        return self.store.search(query, user_id=self.user_id, limit=limit)
     
     def get(self, memory_id: str) -> Optional[Memory]:
         """
@@ -503,7 +503,7 @@ class MemoryManager:
         Returns:
             str: 格式化的记忆文本
         """
-        memories = self.search(query, max_results)
+        memories = self.search(query, limit=max_results)
         
         if not memories:
             return ""
@@ -629,7 +629,7 @@ def quick_add_memory(content: str, user_id: str = None) -> str:
 def quick_search_memory(query: str, user_id: str = None, limit: int = 10) -> List[Memory]:
     """快速搜索记忆"""
     manager = get_memory_manager(user_id)
-    return manager.search(query, limit)
+    return manager.search(query, limit=limit)
 
 
 # 测试代码
