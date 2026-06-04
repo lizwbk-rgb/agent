@@ -19,8 +19,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QFileDialog,
-    QTextEdit,
-    QSplitter,
     QMessageBox,
     QMenu
 )
@@ -139,10 +137,7 @@ class WorkspaceWidget(QWidget):
         
         main_layout.addWidget(toolbar)
         
-        # 主体区域：文件树 + 预览
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # 文件树
+        # 主体区域：文件树
         self.file_tree = QTreeWidget()
         self.file_tree.setHeaderLabels(["文件", "大小", "修改时间"])
         self.file_tree.setColumnWidth(0, 200)
@@ -175,47 +170,7 @@ class WorkspaceWidget(QWidget):
             }
         """)
         
-        splitter.addWidget(self.file_tree)
-        splitter.setStretchFactor(0, 40)
-        
-        # 文件预览
-        preview_container = QFrame()
-        preview_container.setStyleSheet("""
-            QFrame {
-                background-color: #fff;
-                border-left: 1px solid #e0e0e0;
-            }
-        """)
-        
-        preview_layout = QVBoxLayout(preview_container)
-        preview_layout.setContentsMargins(8, 8, 8, 8)
-        preview_layout.setSpacing(8)
-        
-        # 预览标题
-        self.preview_title = QLabel("文件预览")
-        title_font = QFont()
-        title_font.setPointSize(11)
-        title_font.setBold(True)
-        self.preview_title.setFont(title_font)
-        preview_layout.addWidget(self.preview_title)
-        
-        # 预览内容
-        self.preview_content = QTextEdit()
-        self.preview_content.setReadOnly(True)
-        self.preview_content.setPlaceholderText("选择左侧文件查看内容...")
-        self.preview_content.setStyleSheet("""
-            QTextEdit {
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                background-color: #fff;
-            }
-        """)
-        preview_layout.addWidget(self.preview_content)
-        
-        splitter.addWidget(preview_container)
-        splitter.setStretchFactor(1, 60)
-        
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self.file_tree)
         
         # 设置样式
         self.setStyleSheet("""
@@ -345,7 +300,7 @@ class WorkspaceWidget(QWidget):
         file_path = self._get_item_path(item)
         
         if file_path and os.path.isfile(file_path):
-            self.show_file_preview(file_path)
+            logger.info(f"点击文件: {file_path}")
             self.file_selected.emit(file_path)
     
     def on_file_context_menu(self, position):
@@ -380,9 +335,10 @@ class WorkspaceWidget(QWidget):
         if action == open_action and file_path:
             self._open_file(file_path)
         elif action == copy_action and file_path:
-            from PyQt6.QtGui import QClipboard
-            clipboard = QClipboard()
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
             clipboard.setText(file_path)
+            logger.info(f"复制路径到剪贴板: {file_path}")
         elif action == analyze_action and file_path:
             self.file_selected.emit(file_path)
         elif action == explore_action and file_path:
@@ -390,10 +346,10 @@ class WorkspaceWidget(QWidget):
     
     def _get_item_path(self, item: QTreeWidgetItem) -> Optional[str]:
         """获取树节点对应的路径"""
-        if not self.workspace_path:
+        if not self.workspace_path or not item:
             return None
         
-        # 收集路径组件
+        # 收集路径组件（从当前节点向上遍历）
         path_components = []
         
         while item:
@@ -409,31 +365,13 @@ class WorkspaceWidget(QWidget):
             path_components.insert(0, name)
             item = item.parent()
         
-        # 构建完整路径
-        return os.path.join(self.workspace_path, *path_components[1:]) if len(path_components) > 1 else None
-    
-    def show_file_preview(self, file_path: str):
-        """
-        显示文件预览
-        
-        Args:
-            file_path: 文件路径
-        """
-        try:
-            # 更新标题
-            self.preview_title.setText(os.path.basename(file_path))
-            
-            # 提取文件内容
-            content = self.file_processor.extract_text(file_path)
-            
-            # 显示内容
-            self.preview_content.setPlainText(content)
-            
-            logger.info(f"预览文件: {file_path}")
-            
-        except Exception as e:
-            logger.error(f"预览文件失败: {str(e)}")
-            self.preview_content.setPlainText(f"错误: {str(e)}")
+        # 构建完整路径：工作区路径 + 相对路径
+        if len(path_components) == 1:
+            # 顶层节点
+            return os.path.join(self.workspace_path, path_components[0])
+        else:
+            # 子节点：跳过第一个元素（通常是工作区名称或重复项）
+            return os.path.join(self.workspace_path, *path_components[1:])
     
     def on_select_workspace(self):
         """选择工作区按钮点击"""
