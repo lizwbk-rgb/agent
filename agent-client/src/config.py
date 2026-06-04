@@ -100,7 +100,7 @@ class Config(BaseModel):
                 "provider": "openai",
                 "config": {
                     "model": config.DEEPSEEK_MODEL,
-                    "base_url": config.DEEPSEEK_BASE_URL,
+                    "openai_base_url": config.DEEPSEEK_BASE_URL,
                     "api_key": config.DEEPSEEK_API_KEY,
                     "temperature": 0.7,
                     "max_tokens": 2000
