@@ -1,0 +1,699 @@
+"""
+记忆管理模块
+
+封装mem0记忆引擎，提供记忆的CRUD操作
+支持向量检索、记忆修改、格式化显示等功能
+"""
+
+import os
+import json
+import logging
+import hashlib
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+
+from config import Config, get_config
+from utils.helpers import truncate_text
+
+# 配置日志
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Memory:
+    """记忆数据类"""
+    id: str
+    content: str
+    user_id: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    score: float = 0.0  # 检索相关性分数
+    
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+        if self.updated_at is None:
+            self.updated_at = self.created_at
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "id": self.id,
+            "content": self.content,
+            "user_id": self.user_id,
+            "metadata": self.metadata,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "score": self.score
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Memory":
+        """从字典创建"""
+        # 处理时间字段
+        created_at = None
+        if data.get("created_at"):
+            try:
+                created_at = datetime.fromisoformat(data["created_at"])
+            except ValueError:
+                pass
+        
+        updated_at = None
+        if data.get("updated_at"):
+            try:
+                updated_at = datetime.fromisoformat(data["updated_at"])
+            except ValueError:
+                pass
+        
+        return cls(
+            id=data.get("id", ""),
+            content=data.get("content", data.get("memory", "")),
+            user_id=data.get("user_id", ""),
+            metadata=data.get("metadata", {}),
+            created_at=created_at,
+            updated_at=updated_at,
+            score=data.get("score", 0.0)
+        )
+    
+    def format_display(self, include_score: bool = True) -> str:
+        """格式化为显示文本"""
+        if include_score and self.score > 0:
+            return f"[{self.id}] (相关度: {self.score:.2f})\n{self.content}"
+        return f"[{self.id}]\n{self.content}"
+
+
+class BaseMemoryStore(ABC):
+    """记忆存储基类"""
+    
+    @abstractmethod
+    def add(self, memory: Memory) -> str:
+        """添加记忆"""
+        pass
+    
+    @abstractmethod
+    def search(self, query: str, limit: int = 10) -> List[Memory]:
+        """搜索记忆"""
+        pass
+    
+    @abstractmethod
+    def get(self, memory_id: str) -> Optional[Memory]:
+        """获取记忆"""
+        pass
+    
+    @abstractmethod
+    def update(self, memory_id: str, content: str) -> bool:
+        """更新记忆"""
+        pass
+    
+    @abstractmethod
+    def delete(self, memory_id: str) -> bool:
+        """删除记忆"""
+        pass
+    
+    @abstractmethod
+    def clear(self, user_id: str) -> bool:
+        """清空记忆"""
+        pass
+    
+    @abstractmethod
+    def get_all(self, user_id: str) -> List[Memory]:
+        """获取所有记忆"""
+        pass
+
+
+class LocalMemoryStore(BaseMemoryStore):
+    """本地文件记忆存储（备用方案）"""
+    
+    def __init__(self, data_dir: str = "data"):
+        """
+        初始化本地存储
+        
+        Args:
+            data_dir: 数据目录
+        """
+        self.data_dir = data_dir
+        self.memories_file = os.path.join(data_dir, "memories.json")
+        
+        # 确保数据目录存在
+        os.makedirs(data_dir, exist_ok=True)
+        
+        # 加载现有记忆
+        self.memories: Dict[str, List[Dict[str, Any]]] = self._load_memories()
+        
+        logger.info(f"本地记忆存储初始化完成: {self.memories_file}")
+    
+    def _load_memories(self) -> Dict[str, List[Dict[str, Any]]]:
+        """加载记忆数据"""
+        if os.path.exists(self.memories_file):
+            try:
+                with open(self.memories_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"加载记忆失败: {str(e)}，创建新文件")
+        return {}
+    
+    def _save_memories(self):
+        """保存记忆数据"""
+        try:
+            with open(self.memories_file, 'w', encoding='utf-8') as f:
+                json.dump(self.memories, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            logger.error(f"保存记忆失败: {str(e)}")
+    
+    def _generate_id(self, content: str) -> str:
+        """生成记忆ID"""
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+        return f"mem_{timestamp}_{content_hash}"
+    
+    def add(self, memory: Memory) -> str:
+        """添加记忆"""
+        if memory.user_id not in self.memories:
+            self.memories[memory.user_id] = []
+        
+        self.memories[memory.user_id].append({
+            "id": memory.id,
+            "content": memory.content,
+            "metadata": memory.metadata,
+            "created_at": memory.created_at.isoformat() if memory.created_at else datetime.now().isoformat(),
+            "updated_at": memory.updated_at.isoformat() if memory.updated_at else datetime.now().isoformat()
+        })
+        
+        self._save_memories()
+        logger.info(f"添加记忆: {memory.id}")
+        return memory.id
+    
+    def search(self, query: str, limit: int = 10, user_id: str = None) -> List[Memory]:
+        """
+        搜索记忆（简单文本匹配）
+        
+        Args:
+            query: 查询文本
+            limit: 返回数量限制
+            user_id: 用户ID
+            
+        Returns:
+            List[Memory]: 按相关性排序的记忆列表
+        """
+        user_id = user_id or "default_user"
+        memories = self.memories.get(user_id, [])
+        
+        if not memories:
+            return []
+        
+        query_lower = query.lower()
+        query_words = set(query_lower.split())
+        
+        # 计算每个记忆的相关性分数
+        scored_memories = []
+        for mem_data in memories:
+            content_lower = mem_data.get("content", "").lower()
+            content_words = set(content_lower.split())
+            
+            # 计算词重叠
+            overlap = len(query_words & content_words)
+            score = overlap / len(query_words) if query_words else 0
+            
+            if score > 0 or query_lower in content_lower:
+                mem_data["score"] = score
+                scored_memories.append(mem_data)
+        
+        # 按分数排序
+        scored_memories.sort(key=lambda x: x.get("score", 0), reverse=True)
+        
+        # 转换为Memory对象
+        return [Memory.from_dict(mem) for mem in scored_memories[:limit]]
+    
+    def get(self, memory_id: str, user_id: str = None) -> Optional[Memory]:
+        """获取记忆"""
+        user_id = user_id or "default_user"
+        memories = self.memories.get(user_id, [])
+        
+        for mem_data in memories:
+            if mem_data.get("id") == memory_id:
+                return Memory.from_dict(mem_data)
+        
+        return None
+    
+    def update(self, memory_id: str, content: str, user_id: str = None) -> bool:
+        """更新记忆"""
+        user_id = user_id or "default_user"
+        memories = self.memories.get(user_id, [])
+        
+        for mem_data in memories:
+            if mem_data.get("id") == memory_id:
+                mem_data["content"] = content
+                mem_data["updated_at"] = datetime.now().isoformat()
+                self._save_memories()
+                logger.info(f"更新记忆: {memory_id}")
+                return True
+        
+        logger.warning(f"记忆不存在: {memory_id}")
+        return False
+    
+    def delete(self, memory_id: str, user_id: str = None) -> bool:
+        """删除记忆"""
+        user_id = user_id or "default_user"
+        memories = self.memories.get(user_id, [])
+        
+        original_count = len(memories)
+        self.memories[user_id] = [
+            mem for mem in memories if mem.get("id") != memory_id
+        ]
+        
+        if len(self.memories[user_id]) < original_count:
+            self._save_memories()
+            logger.info(f"删除记忆: {memory_id}")
+            return True
+        
+        logger.warning(f"记忆不存在: {memory_id}")
+        return False
+    
+    def clear(self, user_id: str = None) -> bool:
+        """清空记忆"""
+        user_id = user_id or "default_user"
+        
+        if user_id in self.memories:
+            count = len(self.memories[user_id])
+            del self.memories[user_id]
+            self._save_memories()
+            logger.info(f"清空用户 {user_id} 的 {count} 条记忆")
+            return True
+        
+        return True
+    
+    def get_all(self, user_id: str = None) -> List[Memory]:
+        """
+        获取所有记忆（按ID倒序）
+        
+        Args:
+            user_id: 用户ID
+            
+        Returns:
+            List[Memory]: 按ID倒序排列的记忆列表
+        """
+        user_id = user_id or "default_user"
+        memories = self.memories.get(user_id, [])
+        
+        # 按ID倒序排列（ID包含时间戳，所以倒序即最新优先）
+        memories.sort(key=lambda x: x.get("id", ""), reverse=True)
+        
+        return [Memory.from_dict(mem) for mem in memories]
+
+
+class MemoryManager:
+    """
+    记忆管理器
+    
+    封装mem0或本地存储，提供统一的记忆管理接口
+    """
+    
+    def __init__(
+        self,
+        user_id: str = None,
+        use_mem0: bool = True,
+        data_dir: str = "data"
+    ):
+        """
+        初始化记忆管理器
+        
+        Args:
+            user_id: 用户ID
+            use_mem0: 是否使用mem0（如果不可用则回退到本地存储）
+            data_dir: 本地存储数据目录
+        """
+        self.user_id = user_id or get_config().USER_ID
+        self.data_dir = data_dir
+        self.use_mem0 = use_mem0 and self._check_mem0_available()
+        
+        if self.use_mem0:
+            self.store = self._init_mem0_store()
+            logger.info("使用mem0记忆存储")
+        else:
+            self.store = LocalMemoryStore(data_dir)
+            logger.info("使用本地记忆存储")
+    
+    def _check_mem0_available(self) -> bool:
+        """检查mem0是否可用"""
+        try:
+            import mem0
+            return True
+        except ImportError:
+            logger.info("mem0未安装，将使用本地存储")
+            return False
+    
+    def _init_mem0_store(self):
+        """初始化mem0存储"""
+        try:
+            from mem0 import Memory as Mem0Memory
+            
+            # 获取mem0配置
+            mem0_config = Config.get_mem0_config()
+            
+            # 初始化mem0
+            return Mem0Memory(**mem0_config)
+            
+        except Exception as e:
+            logger.warning(f"mem0初始化失败: {str(e)}，回退到本地存储")
+            return LocalMemoryStore(self.data_dir)
+    
+    # ==================== 记忆操作 ====================
+    
+    def add(self, content: str, metadata: Dict[str, Any] = None) -> str:
+        """
+        添加记忆
+        
+        Args:
+            content: 记忆内容
+            metadata: 附加元数据
+            
+        Returns:
+            str: 记忆ID
+        """
+        memory = Memory(
+            id=self.store._generate_id(content) if hasattr(self.store, '_generate_id') else f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+            content=content,
+            user_id=self.user_id,
+            metadata=metadata or {}
+        )
+        
+        return self.store.add(memory)
+    
+    def search(self, query: str, limit: int = 10) -> List[Memory]:
+        """
+        搜索记忆
+        
+        Args:
+            query: 查询文本
+            limit: 返回数量限制
+            
+        Returns:
+            List[Memory]: 按相关性排序的记忆列表
+        """
+        return self.store.search(query, limit, self.user_id)
+    
+    def get(self, memory_id: str) -> Optional[Memory]:
+        """
+        获取记忆
+        
+        Args:
+            memory_id: 记忆ID
+            
+        Returns:
+            Memory: 记忆对象，不存在返回None
+        """
+        return self.store.get(memory_id, self.user_id)
+    
+    def update(self, memory_id: str, content: str) -> bool:
+        """
+        更新记忆
+        
+        Args:
+            memory_id: 记忆ID
+            content: 新内容
+            
+        Returns:
+            bool: 是否成功
+        """
+        return self.store.update(memory_id, content, self.user_id)
+    
+    def delete(self, memory_id: str) -> bool:
+        """
+        删除记忆
+        
+        Args:
+            memory_id: 记忆ID
+            
+        Returns:
+            bool: 是否成功
+        """
+        return self.store.delete(memory_id, self.user_id)
+    
+    def clear(self) -> bool:
+        """
+        清空所有记忆
+        
+        Returns:
+            bool: 是否成功
+        """
+        return self.store.clear(self.user_id)
+    
+    def get_all(self) -> List[Memory]:
+        """
+        获取所有记忆（按ID倒序）
+        
+        Returns:
+            List[Memory]: 记忆列表，按ID倒序排列
+        """
+        return self.store.get_all(self.user_id)
+    
+    # ==================== 便捷方法 ====================
+    
+    def add_conversation_memory(
+        self,
+        user_message: str,
+        assistant_message: str,
+        topic: str = None
+    ) -> str:
+        """
+        添加对话记忆
+        
+        Args:
+            user_message: 用户消息
+            assistant_message: AI回复
+            topic: 话题标签
+            
+        Returns:
+            str: 记忆ID
+        """
+        content = f"用户: {user_message}\nAI: {assistant_message}"
+        
+        metadata = {}
+        if topic:
+            metadata["topic"] = topic
+        metadata["type"] = "conversation"
+        
+        return self.add(content, metadata)
+    
+    def add_user_info(self, info: str, category: str = "general") -> str:
+        """
+        添加用户信息记忆
+        
+        Args:
+            info: 用户信息
+            category: 分类（general, preference, fact等）
+            
+        Returns:
+            str: 记忆ID
+        """
+        metadata = {"type": "user_info", "category": category}
+        return self.add(info, metadata)
+    
+    def search_related(self, query: str, max_results: int = 5) -> str:
+        """
+        搜索相关记忆并格式化输出
+        
+        Args:
+            query: 查询文本
+            max_results: 最大结果数
+            
+        Returns:
+            str: 格式化的记忆文本
+        """
+        memories = self.search(query, max_results)
+        
+        if not memories:
+            return ""
+        
+        return self.format_memories_for_display(memories)
+    
+    # ==================== 格式化方法 ====================
+    
+    def format_memories_for_display(
+        self,
+        memories: List[Memory],
+        include_score: bool = True,
+        max_content_length: int = 200
+    ) -> str:
+        """
+        格式化记忆列表用于显示
+        
+        Args:
+            memories: 记忆列表
+            include_score: 是否包含相关性分数
+            max_content_length: 最大内容长度
+            
+        Returns:
+            str: 格式化的文本
+        """
+        if not memories:
+            return ""
+        
+        lines = []
+        for mem in memories:
+            # 截断内容
+            content = truncate_text(mem.content, max_content_length)
+            
+            # 格式化单条记忆
+            if include_score and mem.score > 0:
+                lines.append(f"[{mem.id}] (相关度: {mem.score:.2f})")
+                lines.append(content)
+            else:
+                lines.append(f"[{mem.id}]")
+                lines.append(content)
+            
+            lines.append("")  # 空行分隔
+        
+        return "\n".join(lines)
+    
+    def format_memories_for_context(
+        self,
+        memories: List[Memory],
+        max_length: int = 2000
+    ) -> str:
+        """
+        格式化记忆用于对话上下文
+        
+        Args:
+            memories: 记忆列表
+            max_length: 最大长度
+            
+        Returns:
+            str: 格式化的上下文文本
+        """
+        if not memories:
+            return ""
+        
+        parts = ["以下是与当前对话相关的记忆信息：\n"]
+        
+        current_length = len("".join(parts))
+        
+        for mem in memories:
+            # 构建记忆文本
+            mem_text = f"- [{mem.id}]: {mem.content}\n"
+            
+            if current_length + len(mem_text) <= max_length:
+                parts.append(mem_text)
+                current_length += len(mem_text)
+            else:
+                # 空间不足，停止添加
+                break
+        
+        return "".join(parts)
+    
+    def get_memory_summary(self) -> Dict[str, Any]:
+        """
+        获取记忆摘要
+        
+        Returns:
+            Dict: 记忆统计信息
+        """
+        all_memories = self.get_all()
+        
+        # 统计分类
+        categories = {}
+        types = {}
+        
+        for mem in all_memories:
+            # 统计类型
+            mem_type = mem.metadata.get("type", "unknown")
+            types[mem_type] = types.get(mem_type, 0) + 1
+            
+            # 统计分类
+            if mem_type == "user_info":
+                category = mem.metadata.get("category", "general")
+                categories[category] = categories.get(category, 0) + 1
+        
+        return {
+            "total_count": len(all_memories),
+            "types": types,
+            "categories": categories
+        }
+
+
+# 便捷函数
+def get_memory_manager(user_id: str = None) -> MemoryManager:
+    """获取记忆管理器实例"""
+    return MemoryManager(user_id=user_id)
+
+
+def quick_add_memory(content: str, user_id: str = None) -> str:
+    """快速添加记忆"""
+    manager = get_memory_manager(user_id)
+    return manager.add(content)
+
+
+def quick_search_memory(query: str, user_id: str = None, limit: int = 10) -> List[Memory]:
+    """快速搜索记忆"""
+    manager = get_memory_manager(user_id)
+    return manager.search(query, limit)
+
+
+# 测试代码
+if __name__ == "__main__":
+    print("=" * 50)
+    print("记忆管理模块测试")
+    print("=" * 50)
+    
+    # 创建记忆管理器
+    manager = MemoryManager(use_mem0=False)  # 使用本地存储进行测试
+    
+    # 添加记忆
+    print("\n1. 添加记忆")
+    mem1_id = manager.add("用户喜欢Python编程", {"type": "user_info", "category": "preference"})
+    print(f"  记忆1 ID: {mem1_id}")
+    
+    mem2_id = manager.add("用户的工作单位是腾讯", {"type": "user_info", "category": "fact"})
+    print(f"  记忆2 ID: {mem2_id}")
+    
+    mem3_id = manager.add_conversation_memory(
+        "如何学习Python？",
+        "建议从基础语法开始，多做练习项目。",
+        "学习建议"
+    )
+    print(f"  对话记忆 ID: {mem3_id}")
+    
+    # 获取所有记忆
+    print("\n2. 获取所有记忆")
+    all_memories = manager.get_all()
+    print(f"  总数: {len(all_memories)}")
+    for mem in all_memories:
+        print(f"  - {mem.id}: {truncate_text(mem.content, 50)}")
+    
+    # 搜索记忆
+    print("\n3. 搜索记忆")
+    results = manager.search("Python", limit=5)
+    print(f"  找到 {len(results)} 条相关记忆:")
+    for mem in results:
+        print(f"  - {mem.id} (相关度: {mem.score:.2f}): {truncate_text(mem.content, 50)}")
+    
+    # 更新记忆
+    print("\n4. 更新记忆")
+    manager.update(mem1_id, "用户非常热爱Python编程，已经学习了3年")
+    updated_mem = manager.get(mem1_id)
+    if updated_mem:
+        print(f"  更新后: {updated_mem.content}")
+    
+    # 格式化显示
+    print("\n5. 格式化显示")
+    display_text = manager.format_memories_for_display(all_memories)
+    print(f"\n{display_text}")
+    
+    # 获取摘要
+    print("\n6. 记忆摘要")
+    summary = manager.get_memory_summary()
+    print(f"  总数: {summary['total_count']}")
+    print(f"  类型分布: {summary['types']}")
+    print(f"  分类分布: {summary['categories']}")
+    
+    # 清空记忆
+    print("\n7. 清空记忆")
+    manager.clear()
+    print(f"  清空完成，剩余记忆: {len(manager.get_all())}")
+    
+    print("\n" + "=" * 50)
+    print("所有测试完成！")
+    print("=" * 50)
