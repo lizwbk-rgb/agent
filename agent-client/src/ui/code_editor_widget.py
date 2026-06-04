@@ -257,9 +257,23 @@ class CodeEditorWidget(QWidget):
                 elif reply == QMessageBox.StandardButton.Cancel:
                     return
             
-            # 读取文件内容
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            # 尝试多种编码打开文件
+            content = None
+            encoding_used = None
+            
+            # 编码尝试顺序：utf-8, utf-16, gbk, latin-1
+            for encoding in ['utf-8', 'utf-16', 'gbk', 'latin-1']:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        content = f.read()
+                    encoding_used = encoding
+                    break
+                except UnicodeDecodeError:
+                    continue
+            
+            if content is None:
+                # 所有编码都失败（理论上 latin-1 不会失败）
+                raise Exception("无法识别文件编码")
             
             # 设置编辑器内容
             self.editor.setPlainText(content)
@@ -274,24 +288,8 @@ class CodeEditorWidget(QWidget):
             # 发出信号
             self.file_changed.emit(file_path)
             
-            logger.info(f"打开文件: {file_path}")
+            logger.info(f"打开文件: {file_path} (编码: {encoding_used})")
             
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            try:
-                with open(file_path, 'r', encoding='gbk') as f:
-                    content = f.read()
-                self.editor.setPlainText(content)
-                self.current_file = file_path
-                self.is_modified = False
-                self.file_name_label.setText(os.path.basename(file_path))
-                self.save_btn.setEnabled(False)
-                self.modified_label.setText("")
-                self.file_changed.emit(file_path)
-                logger.info(f"打开文件(GBK编码): {file_path}")
-            except Exception as e:
-                logger.error(f"打开文件失败: {str(e)}")
-                QMessageBox.warning(self, "错误", f"无法打开文件: {str(e)}")
         except Exception as e:
             logger.error(f"打开文件失败: {str(e)}")
             QMessageBox.warning(self, "错误", f"无法打开文件: {str(e)}")
