@@ -2,8 +2,9 @@
 主窗口组件
 
 PyQt应用主窗口，支持Ask和Craft两种模式
-Ask模式: 对话85% + 记忆15%
-Craft模式: 工作区15% + 对话70% + 记忆15%
+Ask模式: 对话100%
+Craft模式: 工作区15% + 对话85%
+记忆管理: 独立窗口页面
 """
 
 import os
@@ -20,7 +21,12 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QStatusBar,
-    QLabel
+    QLabel,
+    QDockWidget,
+    QScrollArea,
+    QPushButton,
+    QFrame,
+    QHeaderView
 )
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QAction, QActionGroup
@@ -32,6 +38,79 @@ from ui.memory_widget import MemoryWidget
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+class MemoryManagerWindow(QMainWindow):
+    """
+    记忆管理独立窗口
+    
+    提供独立的记忆管理页面，包含记忆列表、刷新、删除、清空等功能
+    """
+    
+    def __init__(self, memory_manager, parent=None):
+        """
+        初始化记忆管理窗口
+        
+        Args:
+            memory_manager: 记忆管理器实例
+            parent: 父窗口
+        """
+        super().__init__(parent)
+        
+        self.memory_manager = memory_manager
+        
+        # 窗口设置
+        self.setWindowTitle("记忆管理")
+        self.setMinimumSize(700, 500)
+        
+        # 创建中央组件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 主布局
+        layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # 创建记忆组件
+        self.memory_widget = MemoryWidget(self.memory_manager)
+        layout.addWidget(self.memory_widget)
+        
+        # 设置样式
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+        """)
+        
+        # 连接信号
+        self.memory_widget.memory_deleted.connect(self.on_memory_deleted)
+        self.memory_widget.memories_cleared.connect(self.on_memories_cleared)
+        
+        # 刷新记忆列表
+        self.memory_widget.refresh_memories()
+        
+        logger.info("记忆管理窗口初始化完成")
+    
+    def on_memory_deleted(self, memory_id: str):
+        """记忆删除事件"""
+        self.statusBar().showMessage(f"已删除记忆: {memory_id}")
+        logger.info(f"记忆管理窗口 - 已删除记忆: {memory_id}")
+    
+    def on_memories_cleared(self):
+        """记忆清空事件"""
+        self.statusBar().showMessage("所有记忆已清空")
+        logger.info("记忆管理窗口 - 所有记忆已清空")
+    
+    def refresh_memories(self):
+        """刷新记忆列表"""
+        self.memory_widget.refresh_memories()
+    
+    def closeEvent(self, event):
+        """关闭事件 - 隐藏窗口而不是真正关闭"""
+        event.ignore()
+        self.hide()
+        logger.info("记忆管理窗口已隐藏")
 
 
 class MainWindow(QMainWindow):
@@ -156,6 +235,13 @@ class MainWindow(QMainWindow):
         # 记忆菜单
         memory_menu = menubar.addMenu("记忆")
         
+        # 打开记忆管理
+        open_memory_action = QAction("打开记忆管理", self)
+        open_memory_action.triggered.connect(self.open_memory_manager)
+        memory_menu.addAction(open_memory_action)
+        
+        memory_menu.addSeparator()
+        
         # 刷新记忆
         refresh_memory_action = QAction("刷新记忆", self)
         refresh_memory_action.triggered.connect(self.refresh_memories)
@@ -200,10 +286,6 @@ class MainWindow(QMainWindow):
         self.chat_widget.message_sent.connect(self.on_message_sent)
         self.chat_widget.file_uploaded.connect(self.on_file_uploaded)
         self.chat_widget.mode_changed.connect(self.on_mode_changed)
-        
-        # MemoryWidget信号
-        self.memory_widget.memory_deleted.connect(self.on_memory_deleted)
-        self.memory_widget.memories_cleared.connect(self.on_memories_cleared)
         
         # Craft模式下连接工作区信号
         if self.current_mode == ChatMode.CRAFT:
@@ -270,21 +352,16 @@ class MainWindow(QMainWindow):
             self.clear_workspace_action.setEnabled(self.current_mode == ChatMode.CRAFT)
     
     def _setup_ask_mode(self):
-        """设置Ask模式布局（对话85%+记忆15%）"""
+        """设置Ask模式布局（对话100%）"""
         # 对话组件
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
         
-        # 记忆组件
-        self.memory_widget = MemoryWidget(self.agent.memory_manager)
-        
         # 添加到分割器
         self.main_splitter.addWidget(self.chat_widget)
-        self.main_splitter.addWidget(self.memory_widget)
         
         # 设置比例
-        self.main_splitter.setStretchFactor(0, 85)
-        self.main_splitter.setStretchFactor(1, 15)
+        self.main_splitter.setStretchFactor(0, 100)
         
         # 连接信号
         self._setup_connections()
@@ -293,7 +370,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("mode", "ask")
     
     def _setup_craft_mode(self):
-        """设置Craft模式布局（工作区15%+对话70%+记忆15%）"""
+        """设置Craft模式布局（工作区15%+对话85%）"""
         # 工作区组件
         from .workspace_widget import WorkspaceWidget
         self.workspace_widget = WorkspaceWidget()
@@ -302,18 +379,13 @@ class MainWindow(QMainWindow):
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
         
-        # 记忆组件
-        self.memory_widget = MemoryWidget(self.agent.memory_manager)
-        
         # 添加到分割器
         self.main_splitter.addWidget(self.workspace_widget)
         self.main_splitter.addWidget(self.chat_widget)
-        self.main_splitter.addWidget(self.memory_widget)
         
         # 设置比例
         self.main_splitter.setStretchFactor(0, 15)
-        self.main_splitter.setStretchFactor(1, 70)
-        self.main_splitter.setStretchFactor(2, 15)
+        self.main_splitter.setStretchFactor(1, 85)
         
         # 连接信号（包含工作区信号）
         self._setup_connections()
@@ -360,6 +432,22 @@ class MainWindow(QMainWindow):
         
         # 在对话中显示文件信息
         self.chat_widget.add_system_message(f"已从工作区选择文件: {file_name}")
+    
+    def open_memory_manager(self):
+        """打开记忆管理独立窗口"""
+        if not hasattr(self, '_memory_window') or self._memory_window is None:
+            self._memory_window = MemoryManagerWindow(self.agent.memory_manager, self)
+        
+        # 刷新记忆列表
+        self._memory_window.refresh_memories()
+        
+        # 显示窗口
+        self._memory_window.show()
+        self._memory_window.raise_()
+        self._memory_window.activateWindow()
+        
+        self.statusBar().showMessage("记忆管理窗口已打开")
+        logger.info("打开记忆管理窗口")
     
     def on_memory_deleted(self, memory_id: str):
         """记忆删除事件"""
@@ -420,9 +508,10 @@ class MainWindow(QMainWindow):
     
     def refresh_memories(self):
         """刷新记忆"""
-        if hasattr(self, 'memory_widget'):
-            self.memory_widget.refresh_memories()
-            self._update_memory_count()
+        # 如果记忆管理窗口已打开，刷新窗口中的记忆列表
+        if hasattr(self, '_memory_window') and self._memory_window and self._memory_window.isVisible():
+            self._memory_window.refresh_memories()
+        self._update_memory_count()
     
     def clear_all_memories(self):
         """清空所有记忆"""
