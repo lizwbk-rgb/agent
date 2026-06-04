@@ -353,8 +353,8 @@ class MemoryManager:
             # 获取mem0配置
             mem0_config = Config.get_mem0_config()
             
-            # 初始化mem0
-            return Mem0Memory(**mem0_config)
+            # 初始化mem0（使用from_config方法）
+            return Mem0Memory.from_config(mem0_config)
             
         except Exception as e:
             logger.warning(f"mem0初始化失败: {str(e)}，回退到本地存储")
