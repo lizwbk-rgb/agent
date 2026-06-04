@@ -166,6 +166,7 @@ class ChatWidget(QWidget):
         self.current_mode = ChatMode.ASK
         self.markdown_renderer = MarkdownRenderer()
         self.workspace_path = None  # 工作区路径，用于文件引用
+        self._from_input_at = False  # 标志：是否来自输入框@触发
         
         # 文件引用弹出框
         self.file_reference_popup = FileReferencePopup(self)
@@ -382,6 +383,8 @@ class ChatWidget(QWidget):
         if obj == self.message_input and event.type() == QEvent.Type.KeyPress:
             # 检查是否输入了@
             if event.text() == '@':
+                # 设置标志：来自输入框@触发
+                self._from_input_at = True
                 # 显示文件引用弹出框
                 self.show_file_reference_popup()
         
@@ -408,9 +411,18 @@ class ChatWidget(QWidget):
     
     def on_file_reference_selected(self, file_path: str):
         """文件引用选中事件"""
-        # 在输入框中插入@文件路径
+        # 在输入框中插入文件路径
         cursor = self.message_input.textCursor()
-        cursor.insertText(f"@{file_path} ")
+        
+        # 判断来源：如果是从输入框@触发，不插入@（用户已输入）
+        # 如果是从右键菜单"添加至会话"触发，需要插入@
+        if hasattr(self, '_from_input_at') and self._from_input_at:
+            # 来自输入框@触发，只插入文件路径（不含@）
+            cursor.insertText(f"{file_path} ")
+            self._from_input_at = False  # 重置标志
+        else:
+            # 来自右键菜单，插入@文件路径
+            cursor.insertText(f"@{file_path} ")
         
         logger.info(f"插入文件引用: {file_path}")
     
