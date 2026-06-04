@@ -115,11 +115,9 @@ class Config(BaseModel):
                 }
             },
             "vector_store": {
-                "provider": "qdrant",
+                "provider": "chroma",
                 "config": {
-                    "host": config.QDRANT_HOST,
-                    "port": config.QDRANT_PORT,
-                    "collection_name": config.MEM0_COLLECTION_NAME
+                    "path": "data/chroma.db"
                 }
             },
             "history_db": {
