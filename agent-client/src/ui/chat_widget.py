@@ -391,6 +391,12 @@ class ChatWidget(QWidget):
         """显示文件引用弹出框"""
         if not self.workspace_path:
             logger.warning("工作区路径未设置，无法显示文件引用弹出框")
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "提示",
+                "请先设置工作区路径（点击工作区组件的'选择...'按钮）"
+            )
             return
         
         # 设置弹出框的工作区路径

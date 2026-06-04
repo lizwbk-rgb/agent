@@ -296,6 +296,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'workspace_widget') and self.workspace_widget:
             self.workspace_widget.file_selected.connect(self.on_file_selected_from_workspace)
             self.workspace_widget.file_added_to_session.connect(self.on_file_added_to_session)
+            self.workspace_widget.workspace_path_changed.connect(self.on_workspace_path_changed)
             logger.info("工作区信号已连接")
     
     def set_mode(self, mode: ChatMode):
@@ -387,6 +388,10 @@ class MainWindow(QMainWindow):
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
         
+        # 如果工作区已有路径，设置到chat_widget（用于文件引用）
+        if self.workspace_widget.workspace_path:
+            self.chat_widget.set_workspace_path(self.workspace_widget.workspace_path)
+        
         # 创建中间分割器（代码编辑器 + 对话）
         self.center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.center_splitter.addWidget(self.code_editor)
@@ -464,6 +469,14 @@ class MainWindow(QMainWindow):
         
         # 更新状态栏
         self.statusBar().showMessage(f"已添加文件到会话: {os.path.basename(file_path)}")
+    
+    def on_workspace_path_changed(self, workspace_path: str):
+        """工作区路径变化事件"""
+        logger.info(f"工作区路径变化: {workspace_path}")
+        
+        # 更新chat_widget的工作区路径
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.set_workspace_path(workspace_path)
     
     def open_memory_manager(self):
         """打开记忆管理独立窗口"""

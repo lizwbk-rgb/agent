@@ -42,6 +42,7 @@ class WorkspaceWidget(QWidget):
     # 信号
     file_selected = pyqtSignal(str)  # 文件路径信号
     file_added_to_session = pyqtSignal(str)  # 文件添加到会话信号
+    workspace_path_changed = pyqtSignal(str)  # 工作区路径变化信号
     
     def __init__(self, parent: QWidget = None):
         """
@@ -201,6 +202,9 @@ class WorkspaceWidget(QWidget):
         
         # 刷新文件树
         self.refresh_file_tree()
+        
+        # 发出工作区路径变化信号
+        self.workspace_path_changed.emit(path)
         
         logger.info(f"设置工作区: {path}")
     
