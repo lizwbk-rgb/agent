@@ -111,7 +111,7 @@ class Config(BaseModel):
                 "config": {
                     "model": "text-embedding-3-small",  # 使用本地嵌入模型时替换
                     "api_key": config.DEEPSEEK_API_KEY,
-                    "dimensions": 1536
+                    "embedding_dims": 1536
                 }
             },
             "vector_store": {
