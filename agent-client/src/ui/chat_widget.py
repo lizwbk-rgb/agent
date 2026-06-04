@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFileDialog,
-    QMessageBox
+    QMessageBox,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent
@@ -27,7 +28,7 @@ from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent
 from agent import Agent, ChatMode, ChatResult
 from memory_manager import Memory
 from utils.helpers import truncate_text, format_timestamp
-from markdown_renderer import MarkdownRenderer
+from ui.markdown_renderer import MarkdownRenderer
 
 # 配置日志
 logger = logging.getLogger(__name__)

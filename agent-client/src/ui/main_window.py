@@ -81,8 +81,8 @@ class MainWindow(QMainWindow):
         # 分割器
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # 根据模式设置布局
-        self.set_mode(ChatMode.ASK)
+        # 强制初始化组件（跳过模式检查）
+        self._setup_ask_mode()
         
         main_layout.addWidget(self.main_splitter)
         
