@@ -110,7 +110,6 @@ class Config(BaseModel):
                 "provider": "openai",
                 "config": {
                     "model": "text-embedding-3-small",  # 使用本地嵌入模型时替换
-                    "base_url": config.DEEPSEEK_BASE_URL,
                     "api_key": config.DEEPSEEK_API_KEY,
                     "dimensions": 1536
                 }
