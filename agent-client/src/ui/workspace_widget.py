@@ -41,6 +41,7 @@ class WorkspaceWidget(QWidget):
     
     # 信号
     file_selected = pyqtSignal(str)  # 文件路径信号
+    file_added_to_session = pyqtSignal(str)  # 文件添加到会话信号
     
     def __init__(self, parent: QWidget = None):
         """
@@ -319,6 +320,9 @@ class WorkspaceWidget(QWidget):
         # 复制路径
         copy_action = menu.addAction("复制路径")
         
+        # 添加至会话
+        add_to_session_action = menu.addAction("添加至会话")
+        
         # 分析文件
         if file_path and os.path.isfile(file_path):
             analyze_action = menu.addAction("分析此文件")
@@ -339,6 +343,10 @@ class WorkspaceWidget(QWidget):
             clipboard = QApplication.clipboard()
             clipboard.setText(file_path)
             logger.info(f"复制路径到剪贴板: {file_path}")
+        elif action == add_to_session_action and file_path:
+            # 发出信号，将文件添加到会话
+            self.file_added_to_session.emit(file_path)
+            logger.info(f"添加文件到会话: {file_path}")
         elif action == analyze_action and file_path:
             self.file_selected.emit(file_path)
         elif action == explore_action and file_path:

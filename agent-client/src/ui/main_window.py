@@ -295,6 +295,7 @@ class MainWindow(QMainWindow):
         """连接工作区组件信号"""
         if hasattr(self, 'workspace_widget') and self.workspace_widget:
             self.workspace_widget.file_selected.connect(self.on_file_selected_from_workspace)
+            self.workspace_widget.file_added_to_session.connect(self.on_file_added_to_session)
             logger.info("工作区信号已连接")
     
     def set_mode(self, mode: ChatMode):
@@ -329,6 +330,9 @@ class MainWindow(QMainWindow):
             # 恢复工作区路径
             if old_workspace_path and hasattr(self, 'workspace_widget'):
                 self.workspace_widget.set_workspace(old_workspace_path)
+                # 同时设置chat_widget的工作区路径（用于文件引用）
+                if hasattr(self, 'chat_widget'):
+                    self.chat_widget.set_workspace_path(old_workspace_path)
         
         # 更新菜单项状态
         self._update_menu_state()
@@ -449,6 +453,17 @@ class MainWindow(QMainWindow):
         else:
             # 在对话中显示文件信息
             self.chat_widget.add_system_message(f"已从工作区选择文件: {file_name}")
+    
+    def on_file_added_to_session(self, file_path: str):
+        """文件添加到会话事件"""
+        logger.info(f"添加文件到会话: {file_path}")
+        
+        # 在聊天框中插入文件引用
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.on_file_reference_selected(file_path)
+        
+        # 更新状态栏
+        self.statusBar().showMessage(f"已添加文件到会话: {os.path.basename(file_path)}")
     
     def open_memory_manager(self):
         """打开记忆管理独立窗口"""

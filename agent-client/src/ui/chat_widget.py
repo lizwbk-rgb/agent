@@ -22,13 +22,14 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QEvent
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCursor
 
 from agent import Agent, ChatMode, ChatResult
 from memory_manager import Memory
 from utils.helpers import truncate_text, format_timestamp
 from ui.markdown_renderer import MarkdownRenderer
+from ui.file_reference_popup import FileReferencePopup
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -164,6 +165,11 @@ class ChatWidget(QWidget):
         self.agent = agent
         self.current_mode = ChatMode.ASK
         self.markdown_renderer = MarkdownRenderer()
+        self.workspace_path = None  # 工作区路径，用于文件引用
+        
+        # 文件引用弹出框
+        self.file_reference_popup = FileReferencePopup(self)
+        self.file_reference_popup.file_selected.connect(self.on_file_reference_selected)
         
         self.setup_ui()
         self.setup_connections()
@@ -368,8 +374,44 @@ class ChatWidget(QWidget):
         # 模式切换
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         
-        # 输入框快捷键
+        # 输入框事件过滤器
         self.message_input.installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """事件过滤器，用于检测@输入"""
+        if obj == self.message_input and event.type() == QEvent.Type.KeyPress:
+            # 检查是否输入了@
+            if event.text() == '@':
+                # 显示文件引用弹出框
+                self.show_file_reference_popup()
+        
+        return super().eventFilter(obj, event)
+    
+    def show_file_reference_popup(self):
+        """显示文件引用弹出框"""
+        if not self.workspace_path:
+            logger.warning("工作区路径未设置，无法显示文件引用弹出框")
+            return
+        
+        # 设置弹出框的工作区路径
+        self.file_reference_popup.set_workspace(self.workspace_path)
+        
+        # 获取光标全局位置
+        cursor_pos = self.message_input.mapToGlobal(self.message_input.cursorRect().bottomRight())
+        self.file_reference_popup.show_at_cursor(cursor_pos)
+    
+    def on_file_reference_selected(self, file_path: str):
+        """文件引用选中事件"""
+        # 在输入框中插入@文件路径
+        cursor = self.message_input.textCursor()
+        cursor.insertText(f"@{file_path} ")
+        
+        logger.info(f"插入文件引用: {file_path}")
+    
+    def set_workspace_path(self, workspace_path: str):
+        """设置工作区路径"""
+        self.workspace_path = workspace_path
+        logger.info(f"设置工作区路径: {workspace_path}")
     
     def send_message(self):
         """发送消息"""
