@@ -107,11 +107,11 @@ class Config(BaseModel):
                 }
             },
             "embedder": {
-                "provider": "openai",
+                "provider": "sentence_transformer",
                 "config": {
-                    "model": "text-embedding-3-small",  # 使用本地嵌入模型时替换
-                    "api_key": config.DEEPSEEK_API_KEY,
-                    "embedding_dims": 1536
+                    "model_name": "all-MiniLM-L6-v2",
+                    "device": config.DEVICE,
+                    "normalize_embeddings": True
                 }
             },
             "vector_store": {
