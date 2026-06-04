@@ -452,15 +452,25 @@ class WorkspaceWidget(QWidget):
             import subprocess
             import sys
             
+            logger.info(f"尝试打开文件: {file_path}")
+            
             if sys.platform == "win32":
-                os.startfile(file_path)
+                # Windows: 使用 start 命令作为备用方案
+                try:
+                    os.startfile(file_path)
+                except Exception as e1:
+                    logger.warning(f"os.startfile失败，尝试备用方案: {e1}")
+                    # 备用方案：使用 cmd start 命令
+                    subprocess.Popen(['cmd', '/c', 'start', '', file_path], shell=True)
             elif sys.platform == "darwin":
                 subprocess.Popen(['open', file_path])
             else:
                 subprocess.Popen(['xdg-open', file_path])
+            
+            logger.info(f"文件打开成功: {file_path}")
                 
         except Exception as e:
-            logger.error(f"打开文件失败: {str(e)}")
+            logger.error(f"打开文件失败: {str(e)}", exc_info=True)
             QMessageBox.warning(self, "错误", f"无法打开文件: {str(e)}")
     
     def _open_explorer(self, path: str):
