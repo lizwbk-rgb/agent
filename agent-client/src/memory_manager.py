@@ -393,7 +393,7 @@ class MemoryManager:
         Returns:
             List[Memory]: 按相关性排序的记忆列表
         """
-        return self.store.search(query, user_id=self.user_id, limit=limit)
+        return self.store.search(query, filters={"user_id": self.user_id}, limit=limit)
     
     def get(self, memory_id: str) -> Optional[Memory]:
         """
