@@ -370,24 +370,35 @@ class MainWindow(QMainWindow):
         self.settings.setValue("mode", "ask")
     
     def _setup_craft_mode(self):
-        """设置Craft模式布局（工作区15%+对话85%）"""
-        # 工作区组件
+        """设置Craft模式布局（文件树15% + 代码编辑器50% + 对话35%）"""
+        # 工作区组件（文件树）
         from .workspace_widget import WorkspaceWidget
         self.workspace_widget = WorkspaceWidget()
+        
+        # 代码编辑器组件
+        from .code_editor_widget import CodeEditorWidget
+        self.code_editor = CodeEditorWidget()
         
         # 对话组件
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
         
-        # 添加到分割器
+        # 创建中间分割器（代码编辑器 + 对话）
+        self.center_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.center_splitter.addWidget(self.code_editor)
+        self.center_splitter.addWidget(self.chat_widget)
+        self.center_splitter.setStretchFactor(0, 60)
+        self.center_splitter.setStretchFactor(1, 40)
+        
+        # 添加到主分割器
         self.main_splitter.addWidget(self.workspace_widget)
-        self.main_splitter.addWidget(self.chat_widget)
+        self.main_splitter.addWidget(self.center_splitter)
         
         # 设置比例
         self.main_splitter.setStretchFactor(0, 15)
         self.main_splitter.setStretchFactor(1, 85)
         
-        # 连接信号（包含工作区信号）
+        # 连接信号（包含工作区信号和代码编辑器信号）
         self._setup_connections()
         
         # 保存当前模式
@@ -432,8 +443,12 @@ class MainWindow(QMainWindow):
         # 更新状态栏
         self.statusBar().showMessage(f"已选择文件: {file_name}")
         
-        # 在对话中显示文件信息
-        self.chat_widget.add_system_message(f"已从工作区选择文件: {file_name}")
+        # 在Craft模式下，打开文件到代码编辑器
+        if self.current_mode == ChatMode.CRAFT and hasattr(self, 'code_editor'):
+            self.code_editor.open_file(file_path)
+        else:
+            # 在对话中显示文件信息
+            self.chat_widget.add_system_message(f"已从工作区选择文件: {file_name}")
     
     def open_memory_manager(self):
         """打开记忆管理独立窗口"""
