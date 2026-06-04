@@ -319,7 +319,7 @@ class MainWindow(QMainWindow):
         # 清除现有组件
         while self.main_splitter.count():
             widget = self.main_splitter.widget(0)
-            self.main_splitter.removeWidget(widget)
+            widget.setParent(None)  # 从分割器移除widget
             widget.deleteLater()
         
         if mode == ChatMode.ASK:
@@ -417,10 +417,12 @@ class MainWindow(QMainWindow):
     
     def on_mode_changed(self, mode: str):
         """模式切换事件"""
-        # 这个信号由ChatWidget发出，但模式切换由MainWindow控制
-        # 所以这里不需要做额外处理
-        # 可以在这里添加日志记录
         logger.debug(f"ChatWidget请求切换模式: {mode}")
+        # 将字符串模式转换为ChatMode枚举并切换
+        if mode == "craft":
+            self.set_mode(ChatMode.CRAFT)
+        elif mode == "ask":
+            self.set_mode(ChatMode.ASK)
     
     def on_file_selected_from_workspace(self, file_path: str):
         """从工作区选择文件事件"""
