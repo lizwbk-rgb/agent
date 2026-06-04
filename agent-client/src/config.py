@@ -115,9 +115,9 @@ class Config(BaseModel):
                 }
             },
             "vector_store": {
-                "provider": "chroma",
+                "provider": "qdrant",
                 "config": {
-                    "path": "data/chroma.db"
+                    "path": "data/qdrant.db"
                 }
             },
             "history_db": {
