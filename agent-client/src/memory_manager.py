@@ -52,7 +52,13 @@ class Memory:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Memory":
-        """从字典创建"""
+        """从字典创建，兼容多种格式（直接格式或Qdrant payload格式）"""
+        # 处理Qdrant格式：{'id': ..., 'payload': {'memory': ..., 'user_id': ...}}
+        if 'payload' in data:
+            payload = data['payload']
+            memory_id = data.get('id', '')
+            return cls.from_dict(payload)  # 递归处理payload
+        
         # 处理时间字段
         created_at = None
         if data.get("created_at"):
@@ -646,7 +652,13 @@ class MemoryManager:
         
         # 打印原始结果用于调试
         if results:
-            logger.info(f"[DEBUG] 原始结果: {results[:3] if len(results) > 3 else results}")
+            logger.info(f"[DEBUG] 原始结果: {results}")
+        
+        # 处理不同类型的返回结果
+        # Qdrant store.get_all(filters) 返回格式: {'results': [{'id': ..., 'payload': {...}}, ...]}
+        if results and isinstance(results, dict) and 'results' in results:
+            results = results['results']
+            logger.info(f"[DEBUG] 从dict提取results: type={type(results)}, len={len(results)}")
         
         # 将结果转换为Memory对象列表
         if results and isinstance(results, list):
@@ -658,7 +670,12 @@ class MemoryManager:
                     logger.info(f"[DEBUG] 第{i}项是Memory对象")
                 elif isinstance(item, dict):
                     try:
-                        mem = Memory.from_dict(item)
+                        # Qdrant返回格式: {'id': ..., 'payload': {'memory': ..., 'user_id': ..., ...}}
+                        if 'payload' in item:
+                            payload = item['payload']
+                            mem = Memory.from_dict(payload)
+                        else:
+                            mem = Memory.from_dict(item)
                         memories.append(mem)
                         logger.info(f"[DEBUG] 第{i}项转换为Memory: id={mem.id}")
                     except Exception as e:
@@ -670,7 +687,8 @@ class MemoryManager:
             logger.info(f"[DEBUG] get_all() 完成，返回 {len(memories)} 条记忆")
             return memories
         else:
-            logger.warning(f"[DEBUG] results不是list或为空: type={type(results)}, value={results}")
+            if results:
+                logger.warning(f"[DEBUG] results不是list或为空: type={type(results)}, value={results}")
         
         return []
     

@@ -6,8 +6,57 @@ Markdown渲染器模块
 
 import re
 import html
+import logging
+import os
+import hashlib
+import base64
+import subprocess
+import sys
 from typing import Optional
 from dataclasses import dataclass
+
+# 配置日志
+logger = logging.getLogger(__name__)
+
+# 用于存储LaTeX渲染缓存
+_latex_cache = {}
+
+# matplotlib 是否可用的标志
+_matplotlib_available = None
+
+def _ensure_matplotlib():
+    """确保 matplotlib 已安装，如果未安装则尝试自动安装"""
+    global _matplotlib_available
+    
+    if _matplotlib_available is not None:
+        return _matplotlib_available
+    
+    try:
+        import matplotlib
+        _matplotlib_available = True
+        logger.info("[matplotlib] 已检测到 matplotlib: %s", matplotlib.__version__)
+        return True
+    except ImportError:
+        _matplotlib_available = False
+        logger.warning("[matplotlib] 未检测到 matplotlib，尝试自动安装...")
+        
+        try:
+            # 尝试自动安装 matplotlib
+            logger.info("[matplotlib] 正在安装 matplotlib...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib>=3.7.0"])
+            
+            # 重新导入
+            import importlib
+            importlib.invalidate_caches()
+            import matplotlib
+            _matplotlib_available = True
+            logger.info("[matplotlib] matplotlib 自动安装成功: %s", matplotlib.__version__)
+            return True
+            
+        except Exception as e:
+            logger.error("[matplotlib] 自动安装 matplotlib 失败: %s", e)
+            logger.warning("[matplotlib] LaTeX渲染功能将不可用，请手动执行: pip install matplotlib>=3.7.0")
+            return False
 
 
 @dataclass
@@ -48,41 +97,163 @@ class MarkdownRenderer:
         Returns:
             str: HTML文本
         """
+        logger.info(f"[MarkdownRenderer.render] 开始，输入长度={len(markdown_text)}")
+        logger.info(f"[MarkdownRenderer.render] 输入前200字: {markdown_text[:200]}")
+        
         if not markdown_text:
             return ""
         
         # 预处理
         text = self._preprocess(markdown_text)
+        logger.info(f"[MarkdownRenderer.render] 预处理后长度={len(text)}")
         
-        # 解析并渲染
+        # 解析并渲染 - 使用更简单的方法：按行处理
+        lines = text.split('\n')
+        logger.info(f"[MarkdownRenderer.render] 总行数={len(lines)}")
+        
         html_parts = []
+        i = 0
         
-        # 处理代码块（需要优先处理）
-        text = self._process_code_blocks(text, html_parts)
-        
-        # 按段落分割处理
-        paragraphs = self._split_paragraphs(text)
-        
-        for paragraph in paragraphs:
-            if not paragraph.strip():
+        while i < len(lines):
+            line = lines[i]
+            logger.info(f"[MarkdownRenderer.render] i={i}, line={line[:50]}")
+            
+            # 检测代码块开始
+            if line.strip().startswith('```'):
+                logger.info(f"[MarkdownRenderer.render] 检测到代码块开始")
+                # 提取代码块
+                code_lines = []
+                lang = line.strip()[3:].strip()
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith('```'):
+                    code_lines.append(lines[i])
+                    i += 1
+                i += 1  # 跳过结束的 ```
+                
+                # 渲染代码块
+                code_html = self._render_code('\n'.join(code_lines), lang)
+                html_parts.append(code_html)
+                logger.info(f"[MarkdownRenderer.render] 代码块已渲染，html_parts长度={len(html_parts)}")
                 continue
             
-            # 检测段落类型
-            html_content = self._process_paragraph(paragraph)
-            if html_content:
-                html_parts.append(html_content)
+            # 检测块级LaTeX公式开始（$$）
+            is_latex_start = line.strip().startswith('$$')
+            if is_latex_start:
+                logger.info(f"[MarkdownRenderer.render] 检测到块级LaTeX公式开始，i={i}")
+                
+                # 提取LaTeX公式
+                latex_lines = []
+                # 移除开头的 $$
+                first_line = line.strip()[2:]
+                if first_line.endswith('$$'):
+                    # 单行公式：$$formula$$
+                    latex_lines.append(first_line[:-2])
+                    i += 1
+                else:
+                    # 多行公式：$$formula 或 $$formula\n...$$\n
+                    latex_lines.append(first_line)
+                    i += 1  # 跳过开头的 $$，指向公式第一行
+                    # 继续收集，直到遇到 $$
+                    while i < len(lines) and not lines[i].strip().startswith('$$'):
+                        latex_lines.append(lines[i])
+                        i += 1
+                    # 此时 i 指向 $$ 开头的行，需要跳过它
+                    i += 1  # 跳过结束的 $$
+                
+                # 渲染LaTeX公式（块级公式，display_mode=True）
+                latex_html = self._render_latex('\n'.join(latex_lines), display_mode=True)
+                # 块级LaTeX公式用段落包裹
+                latex_html = f'<p style="text-align: center; margin: 1em 0;">{latex_html}</p>'
+                html_parts.append(latex_html)
+                logger.info(f"[MarkdownRenderer.render] 块级LaTeX公式已渲染，html_parts长度={len(html_parts)}")
+                continue
+            elif i < 5:  # 只在前5行打印详细日志，避免日志过多
+                logger.info(f"[MarkdownRenderer.render] i={i}, 检查块级LaTeX：line='{line[:30]}'， strip='{line.strip()[:30]}'， startswith$$= {is_latex_start}")
+            
+            # 检测表格（包含 | 的行）
+            if '|' in line and i + 1 < len(lines) and '|' in lines[i+1]:
+                logger.info(f"[MarkdownRenderer.render] 检测到表格开始")
+                # 提取表格行
+                table_lines = []
+                while i < len(lines) and lines[i].strip() and '|' in lines[i]:
+                    table_lines.append(lines[i])
+                    i += 1
+                
+                # 渲染表格
+                table_html = self._render_table('\n'.join(table_lines))
+                if table_html:
+                    html_parts.append(table_html)
+                    logger.info(f"[MarkdownRenderer.render] 表格已渲染，html_parts长度={len(html_parts)}")
+                else:
+                    logger.warning(f"[MarkdownRenderer.render] 表格渲染失败")
+                continue
+            
+            # 普通行 - 收集段落或列表
+            para_lines = []
+            while i < len(lines) and lines[i].strip():
+                # 检查当前行是否是表格的开始
+                if '|' in lines[i]:
+                    # 可能是表格，检查下一行是否也是表格
+                    if i + 1 < len(lines) and '|' in lines[i+1]:
+                        # 是表格开始，停止收集段落
+                        logger.info(f"[MarkdownRenderer.render] 段落收集中遇到表格开始，i={i}")
+                        break
+                # 检查当前行是否是块级LaTeX公式的开始（$$）
+                if lines[i].strip().startswith('$$'):
+                    logger.info(f"[MarkdownRenderer.render] 段落收集中遇到块级LaTeX开始，i={i}")
+                    break
+                para_lines.append(lines[i])
+                i += 1
+            
+            if para_lines:
+                paragraph = '\n'.join(para_lines)
+                logger.info(f"[MarkdownRenderer.render] 处理段落: {paragraph[:50]}")
+                
+                # 检查是否包含列表项
+                lines_in_para = paragraph.split('\n')
+                is_list = all(re.match(r'^[-*+]\s+', line.strip()) or re.match(r'^\d+\.\s+', line.strip()) for line in lines_in_para if line.strip())
+                
+                if is_list:
+                    # 处理列表
+                    logger.info(f"[MarkdownRenderer.render] 检测到列表，行数={len(lines_in_para)}")
+                    list_html = self._process_list(lines_in_para)
+                    if list_html:
+                        html_parts.append(list_html)
+                        logger.info(f"[MarkdownRenderer.render] 列表已处理")
+                else:
+                    # 处理普通段落
+                    html_content = self._process_paragraph(paragraph)
+                    if html_content:
+                        html_parts.append(html_content)
+                        logger.info(f"[MarkdownRenderer.render] 段落已处理，html_parts长度={len(html_parts)}")
+                    else:
+                        logger.warning(f"[MarkdownRenderer.render] 段落处理返回空")
+            
+            # 跳过空行
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+        
+        logger.info(f"[MarkdownRenderer.render] 循环结束，html_parts长度={len(html_parts)}")
         
         # 组装HTML
-        return self._postprocess(html_parts)
+        result = self._postprocess(html_parts)
+        logger.info(f"[MarkdownRenderer.render] 完成，输出长度={len(result)}")
+        return result
     
     def _preprocess(self, text: str) -> str:
         """预处理文本"""
         # 统一换行符
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         
-        # 处理HTML实体
-        text = html.escape(text, quote=False)
+        # 转义 & 符号（必须先处理）
+        text = text.replace('&', '&amp;')
         
+        return text
+    
+    def _escape_html(self, text: str) -> str:
+        """转义HTML特殊字符（< > " '）"""
+        text = text.replace('<', '&lt;')
+        text = text.replace('>', '&gt;')
         return text
     
     def _postprocess(self, html_parts: list) -> str:
@@ -90,81 +261,199 @@ class MarkdownRenderer:
         # 组装
         html_content = '\n'.join(html_parts)
         
+        # 对非HTML标签的文本进行HTML转义
+        html_content = self._escape_text_outside_tags(html_content)
+        
         # 添加样式
         styled_html = self._wrap_with_styles(html_content)
         
         return styled_html
     
-    def _process_code_blocks(self, text: str, html_parts: list) -> str:
-        """处理代码块"""
-        # 匹配围栏代码块 ```language\ncode\n```
-        pattern = r'```(\w*)\n(.*?)```'
-        
-        def replace_code_block(match):
-            language = match.group(1) or ''
-            code = match.group(2)
-            
-            # 渲染代码
-            code_html = self._render_code(code, language)
-            html_parts.append(code_html)
-            
-            return ''  # 移除已处理的代码块
-        
-        return re.sub(pattern, replace_code_block, text, flags=re.DOTALL)
+    def _escape_text_outside_tags(self, html_text: str) -> str:
+        """转义HTML标签外的文本"""
+        # 匹配HTML标签和非标签文本
+        pattern = r'(<[^>]+>)|([^<]+)'
+        result = []
+        for match in re.finditer(pattern, html_text, re.DOTALL):
+            if match.group(1):  # HTML标签，保留原样
+                result.append(match.group(1))
+            else:  # 普通文本，转义HTML特殊字符
+                text = match.group(2)
+                # 只转义 < 和 >（& 已在预处理中转义）
+                text = text.replace('<', '&lt;')
+                text = text.replace('>', '&gt;')
+                result.append(text)
+        return ''.join(result)
     
-    def _split_paragraphs(self, text: str) -> list:
-        """分割段落"""
-        # 按空行分割
-        paragraphs = re.split(r'\n\s*\n', text)
-        return [p.strip() for p in paragraphs if p.strip()]
+    def _process_list(self, lines: list) -> str:
+        """处理列表"""
+        logger.info(f"[_process_list] 开始，行数={len(lines)}")
+        
+        # 判断是有序列表还是无序列表
+        is_ordered = re.match(r'^\d+\.\s+', lines[0].strip())
+        tag = 'ol' if is_ordered else 'ul'
+        
+        # 收集列表项并生成HTML
+        html_parts = [f'<{tag} style="margin: 0.5em 0; padding-left: 2em;">']
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # 检查是否是任务列表
+            task_match = re.match(r'^[-*+]\s+\[([ x])\]\s+(.+)$', line_stripped, re.IGNORECASE)
+            if task_match:
+                # 任务列表
+                checked = 'checked' if task_match.group(1).lower() == 'x' else ''
+                content = task_match.group(2)
+                html_parts.append(f'<li style="margin: 0.2em 0;"><input type="checkbox" {checked} disabled style="margin-right: 4px;">{self._inline_format(content)}</li>')
+                logger.info(f"[_process_list] 任务列表项: checked={checked}, content={content[:30]}")
+            else:
+                # 普通列表项 - 移除列表标记
+                if is_ordered:
+                    match = re.match(r'^\d+\.\s+(.+)$', line_stripped)
+                    if match:
+                        content = match.group(1)
+                        html_parts.append(f'<li style="margin: 0.2em 0;">{self._inline_format(content)}</li>')
+                else:
+                    match = re.match(r'^[-*+]\s+(.+)$', line_stripped)
+                    if match:
+                        content = match.group(1)
+                        html_parts.append(f'<li style="margin: 0.2em 0;">{self._inline_format(content)}</li>')
+        
+        logger.info(f"[_process_list] 列表项数={len(lines)}")
+        html_parts.append(f'</{tag}>')
+        
+        result = '\n'.join(html_parts)
+        logger.info(f"[_process_list] 完成，HTML长度={len(result)}")
+        return result
     
     def _process_paragraph(self, paragraph: str) -> str:
         """处理单个段落"""
+        logger.info(f"[_process_paragraph] 开始，paragraph={paragraph[:50]}")
         # 检测标题
         if paragraph.startswith('# '):
-            return f'<h1>{self._inline_format(paragraph[2:])}</h1>'
+            logger.info(f"[_process_paragraph] 检测到H1")
+            return f'<h1 style="font-size: 1.5em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[2:])}</h1>'
         elif paragraph.startswith('## '):
-            return f'<h2>{self._inline_format(paragraph[3:])}</h2>'
+            logger.info(f"[_process_paragraph] 检测到H2")
+            return f'<h2 style="font-size: 1.3em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[3:])}</h2>'
         elif paragraph.startswith('### '):
-            return f'<h3>{self._inline_format(paragraph[4:])}</h3>'
+            logger.info(f"[_process_paragraph] 检测到H3")
+            return f'<h3 style="font-size: 1.1em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[4:])}</h3>'
         elif paragraph.startswith('#### '):
-            return f'<h4>{self._inline_format(paragraph[5:])}</h4>'
+            logger.info(f"[_process_paragraph] 检测到H4")
+            return f'<h4 style="font-size: 1em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[5:])}</h4>'
         
         # 检测引用
         if paragraph.startswith('> '):
             content = self._inline_format(paragraph[2:])
-            return f'<blockquote>{content}</blockquote>'
+            return f'<blockquote style="border-left: 3px solid #ddd; margin: 0.5em 0; padding: 0.5em 1em; color: #666; background-color: #f9f9f9;">{content}</blockquote>'
         
-        # 检测列表
+        # 检测有序列表
         list_match = re.match(r'^(\d+)\.\s+(.+)$', paragraph)
         if list_match:
-            return f'<ol><li>{self._inline_format(list_match.group(2))}</li></ol>'
+            return f'<ol style="margin: 0.5em 0; padding-left: 2em;"><li style="margin: 0.2em 0;">{self._inline_format(list_match.group(2))}</li></ol>'
         
+        # 检测无序列表
         ul_match = re.match(r'^[-*+]\s+(.+)$', paragraph)
         if ul_match:
-            return f'<ul><li>{self._inline_format(ul_match.group(1))}</li></ul>'
+            return f'<ul style="margin: 0.5em 0; padding-left: 2em;"><li style="margin: 0.2em 0;">{self._inline_format(ul_match.group(1))}</li></ul>'
         
         # 检测表格
         if self.options.render_tables and '|' in paragraph:
+            logger.info(f"[_process_paragraph] 检测到表格，调用_render_table")
             table_html = self._render_table(paragraph)
             if table_html:
+                logger.info(f"[_process_paragraph] 表格渲染成功")
                 return table_html
+            else:
+                logger.warning(f"[_process_paragraph] 表格渲染失败")
         
         # 检测水平线
         if re.match(r'^[-=*_]{3,}$', paragraph):
-            return '<hr>'
+            logger.info(f"[_process_paragraph] 检测到水平线")
+            return '<hr style="border: none; border-top: 1px solid #ddd; margin: 1em 0;">'
         
         # 检测任务列表
         task_match = re.match(r'^[-*+]\s+\[[ x]\]\s+(.+)$', paragraph, re.IGNORECASE)
         if task_match:
             checked = 'checked' if '[x]' in paragraph.lower() else ''
-            return f'<ul><li><input type="checkbox" {checked} disabled>{task_match.group(1)}</li></ul>'
+            logger.info(f"[_process_paragraph] 检测到任务列表")
+            return f'<ul style="margin: 0.5em 0; padding-left: 2em;"><li style="margin: 0.2em 0;"><input type="checkbox" {checked} disabled style="margin-right: 4px;">{task_match.group(1)}</li></ul>'
         
         # 普通段落
-        return f'<p>{self._inline_format(paragraph)}</p>'
+        logger.info(f"[_process_paragraph] 普通段落，调用_inline_format")
+        return f'<p style="margin: 0.5em 0; line-height: 1.6; color: #333;">{self._inline_format(paragraph)}</p>'
     
     def _inline_format(self, text: str) -> str:
         """处理行内格式"""
+        # 简化策略：只支持 *text* 斜体，不支持 _text_ 斜体（避免与LaTeX公式冲突）
+        
+        # 首先处理行内LaTeX公式 $...$（必须在其他处理之前）
+        # 策略：使用 finditer 找到所有 $...$ 匹配，排除 $$ 块级LaTeX
+        def process_inline_latex(text):
+            result = []
+            last_end = 0
+            i = 0
+            
+            while i < len(text):
+                # 找到第一个 $
+                start = text.find('$', i)
+                if start == -1:
+                    # 没找到 $，添加剩余文本并结束
+                    if last_end < len(text):
+                        result.append(text[last_end:])
+                    break
+                
+                # 检查是否是 $$（块级LaTeX）
+                if start + 1 < len(text) and text[start + 1] == '$':
+                    # 这是块级LaTeX，跳过 $$ 但保留文本（块级LaTeX应该已经被单独处理）
+                    # 只跳过 $$，不添加任何内容
+                    i = start + 2
+                    continue
+                
+                # 这是行内LaTeX $...$
+                # 找到对应的结束 $
+                # 跳过在另一个 $$ 内的 $
+                end = start + 1
+                while end < len(text):
+                    if text[end] == '$':
+                        # 检查是否是 $$（不应该在这里出现，但要安全处理）
+                        if end + 1 < len(text) and text[end + 1] == '$':
+                            # 跳过 $$，继续查找
+                            end += 2
+                            continue
+                        # 找到结束 $
+                        break
+                    end += 1
+                
+                if end >= len(text):
+                    # 没找到结束 $，添加剩余文本并结束
+                    if last_end < len(text):
+                        result.append(text[last_end:])
+                    break
+                
+                # 提取LaTeX内容
+                latex_content = text[start + 1:end]
+                
+                # 渲染行内LaTeX为图片
+                latex_html = self._render_latex(latex_content, display_mode=False)
+                
+                # 添加 LaTeX 之前的内容
+                if last_end < start:
+                    result.append(text[last_end:start])
+                
+                # 添加LaTeX图片
+                result.append(latex_html)
+                
+                last_end = end + 1
+                i = end + 1
+            
+            # 不需要再添加剩余文本，因为上面已经处理了
+            
+            return ''.join(result)
+        
+        text = process_inline_latex(text)
+        
         # 粗体和斜体
         # ***text*** 或 ___text___
         text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<strong><em>\1</em></strong>', text)
@@ -174,20 +463,25 @@ class MarkdownRenderer:
         text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
         text = re.sub(r'__(.+?)__', r'<strong>\1</strong>', text)
         
-        # 斜体 *text* 或 _text_
+        # 斜体 *text* （不支持 _text_，避免与LaTeX公式冲突）
         text = re.sub(r'\*(.+?)\*', r'<em>\1</em>', text)
-        text = re.sub(r'_(.+?)_', r'<em>\1</em>', text)
+        # 注意：故意不处理 _text_ 格式，因为LaTeX公式中的下划线会被误处理
         
         # 删除线 ~~text~~
         text = re.sub(r'~~(.+?)~~', r'<del>\1</del>', text)
         
-        # 行内代码 `code`
-        text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+        # 行内代码 `code` - 添加内联样式
+        # 使用非贪婪匹配，但排除已经是代码块的情况
+        def replace_inline_code(match):
+            code_content = match.group(1)
+            # 转义HTML
+            escaped = html.escape(code_content)
+            return f'<code style="background-color: #f5f5f5; padding: 2px 4px; font-family: monospace; font-size: 0.9em; border-radius: 3px;">{escaped}</code>'
         
-        # 链接 [text](url)
-        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2">\1</a>', text)
+        # 匹配行内代码：`...`，但排除 ``` 代码块标记
+        text = re.sub(r'`([^`\n]+?)`', replace_inline_code, text)
         
-        # 图片 ![alt](url)
+        # 图片 ![alt](url) - 必须在链接之前处理，否则链接正则会匹配 [alt](url)
         if self.options.render_images:
             text = re.sub(
                 r'!\[(.+?)\]\((.+?)\)',
@@ -195,6 +489,10 @@ class MarkdownRenderer:
                 text
             )
         
+        # 链接 [text](url)
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\\2" style="color: #0066cc; text-decoration: underline;">\\1</a>', text)
+        
+        logger.info(f"[_inline_format] 处理完成: {text[:100]}")
         return text
     
     def _render_code(self, code: str, language: str = '') -> str:
@@ -208,36 +506,104 @@ class MarkdownRenderer:
         Returns:
             str: HTML代码块
         """
-        # 高亮代码
-        highlighted_code = code
+        # 简单转义HTML（禁用Pygments高亮，避免CSS问题）
+        highlighted_code = html.escape(code)
         
-        if self.options.code_highlight and language:
-            highlighted_code = self._highlight_code(code, language)
-        else:
-            # 转义HTML
-            highlighted_code = html.escape(code)
+        # 构建HTML - 使用简单结构，兼容QTextBrowser
+        html_content = f'<pre style="background-color: #f8f8f8; padding: 8px; border: 1px solid #ccc; font-family: monospace; font-size: 0.9em; white-space: pre-wrap;">{highlighted_code}</pre>'
         
-        # 添加行号
-        if self.options.line_numbers:
-            lines = code.split('\n')
-            numbered_lines = []
-            for i, line in enumerate(lines, 1):
-                highlighted_line = self._highlight_code(line, language) if self.options.code_highlight and language else html.escape(line)
-                numbered_lines.append(f'<span class="line-number">{i}</span><span class="line-content">{highlighted_line}</span>')
-            highlighted_code = '\n'.join(numbered_lines)
+        return html_content
+    
+    def _render_latex(self, latex: str, display_mode: bool = True) -> str:
+        """
+        渲染LaTeX公式为图片
         
-        # 构建HTML
-        lang_label = language.upper() if language else ''
+        Args:
+            latex: LaTeX公式内容
+            display_mode: 是否为显示模式（块级公式）
+            
+        Returns:
+            str: HTML img标签
+        """
+        # 计算缓存键
+        cache_key = hashlib.md5(latex.encode()).hexdigest()
         
-        html_content = f'''
-<div class="code-block">
-    <div class="code-header">
-        <span class="language">{lang_label}</span>
-        <button class="copy-btn" onclick="copyCode(this)">复制</button>
-    </div>
-    <pre class="code-content"><code class="language-{language}">{highlighted_code}</code></pre>
-</div>
-'''
+        # 检查缓存
+        if cache_key in _latex_cache:
+            return _latex_cache[cache_key]
+        
+        # 检查 matplotlib 是否可用
+        if not _ensure_matplotlib():
+            logger.warning("[_render_latex] matplotlib 不可用，返回原始LaTeX")
+            escaped_latex = html.escape(latex)
+            return f'<pre style="background-color: #f0f0f0; padding: 8px; font-family: monospace; font-size: 0.9em; overflow-x: auto;">{escaped_latex}</pre>'
+        
+        try:
+            import matplotlib
+            import matplotlib.pyplot as plt
+            from matplotlib import mathtext
+            import io
+            
+            # 设置matplotlib不显示图形界面
+            matplotlib.use('Agg')
+            
+            # 清理LaTeX字符串
+            latex = latex.strip()
+            
+            # 创建图形 - 使用更大的初始尺寸
+            fig = plt.figure(figsize=(6, 2) if not display_mode else (8, 3))
+            fig.patch.set_facecolor('white')
+            
+            # 添加文本 - 使用Figure的坐标系统
+            text = fig.text(0.5, 0.5, f'${latex}$', fontsize=14 if not display_mode else 18,
+                          ha='center', va='center',
+                          usetex=False,
+                          fontproperties=None)
+            
+            # 强制绘制以获取正确的文本边界
+            fig.canvas.draw()
+            
+            # 调整大小以适应文本
+            bbox = text.get_window_extent()
+            bbox = bbox.transformed(fig.dpi_scale_trans.inverted())
+            
+            # 调整图形大小
+            width, height = bbox.width, bbox.height
+            if width > 0 and height > 0:
+                fig.set_size_inches(width * 1.5, height * 1.5)
+            
+            # 转换为base64图片
+            buffer = io.BytesIO()
+            plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight', 
+                       facecolor='white', edgecolor='none', pad_inches=0.1)
+            buffer.seek(0)
+            
+            # 转换为base64
+            img_base64 = base64.b64encode(buffer.read()).decode()
+            
+            # 释放资源
+            plt.close(fig)
+            buffer.close()
+            
+            # 创建HTML img标签
+            html_content = f'<img src="data:image/png;base64,{img_base64}" '
+            html_content += f'style="max-width: 100%; height: auto; margin: 10px 0;" '
+            html_content += f'alt="LaTeX公式" '
+            html_content += f'onerror="this.style.display=&#39;none&#39;; this.parentNode.innerHTML=&#39;&lt;span style=color:#999&gt;[LaTeX公式]&lt;/span&gt;&#39;;">'
+            
+            # 缓存结果
+            _latex_cache[cache_key] = html_content
+            
+            return html_content
+            
+        except Exception as e:
+            logger.error(f"[_render_latex] 渲染LaTeX失败: {e}")
+            # 返回转义的LaTeX作为备用
+            escaped_latex = html.escape(latex)
+            return f'<pre style="background-color: #f0f0f0; padding: 8px; font-family: monospace; font-size: 0.9em; overflow-x: auto;">{escaped_latex}</pre>'
+        
+        # 使用 <pre> 标签，添加data-latex属性供KaTeX使用
+        html_content = f'<pre class="katex-block" data-latex="{escaped_latex}" style="background-color: #f0f0f0; padding: 8px; font-family: monospace; font-size: 0.9em; overflow-x: auto;">{escaped_latex}</pre>'
         
         return html_content
     
@@ -289,33 +655,77 @@ class MarkdownRenderer:
         Returns:
             str: HTML表格
         """
+        logger.info(f"[_render_table] 开始，text={text[:100]}")
         try:
             lines = text.strip().split('\n')
+            logger.info(f"[_render_table] 行数={len(lines)}")
             
             # 过滤分隔行
             data_lines = [line for line in lines if not re.match(r'^[\s|:-]+$', line)]
+            logger.info(f"[_render_table] 过滤后行数={len(data_lines)}")
             
             if not data_lines:
+                logger.warning(f"[_render_table] 无数据行，返回None")
                 return None
             
             # 解析表格数据
+            # 需要特殊处理：LaTeX公式中的|字符不应作为表格分隔符
             rows = []
             for line in data_lines:
-                cells = [cell.strip() for cell in line.split('|')[1:-1]]  # 去掉首尾空元素
+                # 首先保护LaTeX公式中的内容
+                protected_parts = []
+                i = 0
+                while i < len(line):
+                    # 查找 $...$ 或 $$...$$
+                    if line[i] == '$':
+                        if i + 1 < len(line) and line[i + 1] == '$':
+                            # 块级LaTeX $$...$$
+                            end = line.find('$$', i + 2)
+                            if end == -1:
+                                # 没找到结束的$$，添加剩余内容
+                                protected_parts.append(line[i:])
+                                break
+                            # 提取LaTeX内容，将其中的|替换为占位符
+                            latex_content = line[i:end + 2]
+                            protected_parts.append(latex_content.replace('|', '%%TABLE_PIPE%%'))
+                            i = end + 2
+                        else:
+                            # 行内LaTeX $...$
+                            end = line.find('$', i + 1)
+                            if end == -1:
+                                # 没找到结束的$，添加剩余内容
+                                protected_parts.append(line[i:])
+                                break
+                            # 提取LaTeX内容，将其中的|替换为占位符
+                            latex_content = line[i:end + 1]
+                            protected_parts.append(latex_content.replace('|', '%%TABLE_PIPE%%'))
+                            i = end + 1
+                    else:
+                        protected_parts.append(line[i])
+                        i += 1
+                
+                # 重新组合并分割
+                protected_line = ''.join(protected_parts)
+                cells = [cell.strip().replace('%%TABLE_PIPE%%', '|') for cell in protected_line.split('|')[1:-1]]
+                
                 if cells:
                     rows.append(cells)
+                    logger.info(f"[_render_table] 解析行: {cells}")
             
             if not rows:
+                logger.warning(f"[_render_table] 无有效行，返回None")
                 return None
             
-            # 构建HTML表格
-            html_parts = ['<div class="table-container"><table>']
+            logger.info(f"[_render_table] 解析完成，行数={len(rows)}")
+            
+            # 构建HTML表格 - 使用内联样式
+            html_parts = ['<div style="overflow-x: auto; margin: 1em 0;"><table style="border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em;">']
             
             # 第一行作为表头
             if len(rows) > 0:
                 html_parts.append('<thead><tr>')
                 for cell in rows[0]:
-                    html_parts.append(f'<th>{self._inline_format(cell)}</th>')
+                    html_parts.append(f'<th style="border: 1px solid #ddd; padding: 8px 12px; background-color: #f5f5f5; font-weight: bold; text-align: left;">{self._inline_format(cell)}</th>')
                 html_parts.append('</tr></thead>')
                 
                 # 其余行作为表体
@@ -324,15 +734,17 @@ class MarkdownRenderer:
                     for row in rows[1:]:
                         html_parts.append('<tr>')
                         for cell in row:
-                            html_parts.append(f'<td>{self._inline_format(cell)}</td>')
+                            html_parts.append(f'<td style="border: 1px solid #ddd; padding: 8px 12px; text-align: left;">{self._inline_format(cell)}</td>')
                         html_parts.append('</tr>')
                     html_parts.append('</tbody>')
             
             html_parts.append('</table></div>')
-            
-            return '\n'.join(html_parts)
+            result = '\n'.join(html_parts)
+            logger.info(f"[_render_table] 完成，HTML长度={len(result)}")
+            return result
             
         except Exception as e:
+            logger.error(f"[_render_table] 异常: {e}")
             # 表格解析失败，返回原始文本
             return f'<p>{self._inline_format(text)}</p>'
     
@@ -349,11 +761,11 @@ class MarkdownRenderer:
         """
         # 安全检查
         if not self.options.allow_external_images and url.startswith('http'):
-            return f'<span class="image-placeholder">[外部图片: {alt}]</span>'
+            return f'<span style="color: #999; font-style: italic; padding: 4px; background-color: #f5f5f5; border-radius: 3px;">[外部图片: {alt}]</span>'
         
         # 验证URL
         if not url.startswith(('http://', 'https://', 'data:')):
-            return f'<span class="image-placeholder">[无效图片URL]</span>'
+            return f'<span style="color: #999; font-style: italic; padding: 4px; background-color: #f5f5f5; border-radius: 3px;">[无效图片URL]</span>'
         
         max_width = self.options.max_image_width
         
@@ -361,227 +773,16 @@ class MarkdownRenderer:
 <img 
     src="{url}" 
     alt="{alt}" 
-    class="markdown-image"
-    style="max-width: {max_width}px; height: auto;"
-    onerror="this.style.display='none'; this.parentNode.innerHTML='<span class=image-placeholder>[图片加载失败]</span>';"
+    style="max-width: {max_width}px; height: auto; border-radius: 3px;"
+    onerror="this.style.display='none'; this.parentNode.innerHTML='<span style=color: #999; font-style: italic; padding: 4px; background-color: #f5f5f5; border-radius: 3px;>[图片加载失败]</span>';"
 >
 '''
     
     def _wrap_with_styles(self, html_content: str) -> str:
-        """添加CSS样式"""
-        css = '''
-<style>
-    body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        line-height: 1.6;
-        color: #333;
-        background-color: #fff;
-        max-width: 800px;
-        margin: 0 auto;
-        padding: 20px;
-    }
-    
-    h1 { font-size: 2em; margin: 0.67em 0; }
-    h2 { font-size: 1.5em; margin: 0.75em 0; }
-    h3 { font-size: 1.17em; margin: 0.83em 0; }
-    h4 { font-size: 1em; margin: 1.12em 0; }
-    
-    p { margin: 1em 0; }
-    
-    a { color: #0066cc; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    
-    code {
-        background-color: #f5f5f5;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        font-size: 0.9em;
-    }
-    
-    pre {
-        background-color: #f5f5f5;
-        padding: 1em;
-        border-radius: 6px;
-        overflow-x: auto;
-        margin: 1em 0;
-    }
-    
-    blockquote {
-        border-left: 4px solid #ddd;
-        margin: 1em 0;
-        padding: 0.5em 1em;
-        background-color: #f9f9f9;
-    }
-    
-    ul, ol {
-        margin: 1em 0;
-        padding-left: 2em;
-    }
-    
-    li { margin: 0.5em 0; }
-    
-    hr {
-        border: none;
-        border-top: 1px solid #ddd;
-        margin: 2em 0;
-    }
-    
-    table {
-        border-collapse: collapse;
-        width: 100%;
-        margin: 1em 0;
-    }
-    
-    th, td {
-        border: 1px solid #ddd;
-        padding: 8px 12px;
-        text-align: left;
-    }
-    
-    th {
-        background-color: #f5f5f5;
-        font-weight: bold;
-    }
-    
-    .table-container {
-        overflow-x: auto;
-        margin: 1em 0;
-    }
-    
-    .code-block {
-        margin: 1em 0;
-        border-radius: 6px;
-        overflow: hidden;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    
-    .code-header {
-        background-color: #f5f5f5;
-        padding: 8px 12px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px solid #ddd;
-    }
-    
-    .language {
-        font-size: 0.85em;
-        color: #666;
-        font-weight: bold;
-    }
-    
-    .copy-btn {
-        background-color: #007bff;
-        color: white;
-        border: none;
-        padding: 4px 8px;
-        border-radius: 3px;
-        cursor: pointer;
-        font-size: 0.85em;
-    }
-    
-    .copy-btn:hover { background-color: #0056b3; }
-    
-    .code-content {
-        margin: 0;
-        padding: 12px;
-        background-color: #1e1e1e;
-        color: #d4d4d4;
-        overflow-x: auto;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-        font-size: 0.9em;
-        line-height: 1.5;
-    }
-    
-    .markdown-image {
-        display: block;
-        margin: 1em auto;
-    }
-    
-    .image-placeholder {
-        display: inline-block;
-        padding: 4px 8px;
-        background-color: #f0f0f0;
-        border: 1px solid #ddd;
-        border-radius: 3px;
-        color: #999;
-    }
-    
-    /* Pygments样式 */
-    .highlight { background-color: #f8f8f8; }
-    .highlight .hll { background-color: #ffffcc; }
-    .highlight .c { color: #408080; font-style: italic; }
-    .highlight .err { border: 1px solid #FF0000; }
-    .highlight .k { color: #008000; font-weight: bold; }
-    .highlight .o { color: #666666; }
-    .highlight .ch { color: #408080; font-style: italic; }
-    .highlight .cm { color: #408080; font-style: italic; }
-    .highlight .cp { color: #BC7A00; }
-    .highlight .cpf { color: #408080; font-style: italic; }
-    .highlight .c1 { color: #408080; font-style: italic; }
-    .highlight .cs { color: #408080; font-style: italic; }
-    .highlight .gd { color: #A00000; }
-    .highlight .ge { color: #000080; font-style: italic; }
-    .highlight .gr { color: #FF0000; }
-    .highlight .gh { color: #000080; font-weight: bold; }
-    .highlight .gi { color: #008000; }
-    .highlight .go { color: #888888; }
-    .highlight .gp { color: #000080; font-weight: bold; }
-    .highlight .grr { color: #FF0000; }
-    .highlight .w { color: #bbbbbb; }
-    .highlight .mf { color: #6600EE; font-weight: bold; }
-    .highlight .mh { color: #6600EE; }
-    .highlight .mi { color: #6600EE; font-weight: bold; }
-    .highlight .mo { color: #6600EE; font-weight: bold; }
-    .highlight .mq { color: #BA2121; }
-    .highlight .nl { color: #767600; }
-    .highlight .nc { color: #0000FF; font-weight: bold; }
-    .highlight .nt { color: #008000; font-weight: bold; }
-    .highlight .nn { color: #0000FF; }
-    .highlight .no { color: #880000; }
-    .highlight .nb { color: #008000; }
-    .highlight .nv { color: #19177C; }
-    .highlight .na { color: #7D9029; }
-    .highlight .ns { color: #BB6688; }
-    .highlight .nd { color: #AA22FF; }
-    .highlight .ne { color: #D2413A; font-weight: bold; }
-    .highlight .nf { color: #0000FF; }
-    .highlight .nl { color: #0000FF; }
-    .highlight .nn { color: #0000FF; }
-    .highlight .nt { color: #008000; font-weight: bold; }
-    .highlight .nv { color: #19177C; }
-    .highlight .ow { color: #AA22FF; font-weight: bold; }
-    .highlight .w { color: #bbbbbb; }
-    .highlight .mb { color: #6600EE; font-weight: bold; }
-    .highlight .mf { color: #6600EE; font-weight: bold; }
-    .highlight .mh { color: #6600EE; }
-    .highlight .mi { color: #6600EE; font-weight: bold; }
-    .highlight .mo { color: #6600EE; font-weight: bold; }
-    .highlight .sb { color: #BB2222; }
-    .highlight .sc { color: #BB2222; }
-    .highlight .sd { color: #BB2222; font-style: italic; }
-    .highlight .s2 { color: #BB2222; }
-    .highlight .se { color: #BB2222; font-weight: bold; }
-    .highlight .sh { color: #BB2222; }
-    .highlight .si { color: #BB6688; font-weight: bold; }
-    .highlight .sx { color: #008000; }
-    .highlight .sr { color: #BB6688; }
-    .highlight .s1 { color: #BB2222; }
-    .highlight .ss { color: #19177C; }
-</style>
-<script>
-    function copyCode(btn) {
-        const code = btn.parentElement.nextElementSibling.textContent;
-        navigator.clipboard.writeText(code).then(() => {
-            btn.textContent = '已复制';
-            setTimeout(() => btn.textContent = '复制', 2000);
-        });
-    }
-</script>
-'''
-        
-        return f'{css}<div class="markdown-content">{html_content}</div>'
+        """包装HTML内容（QTextBrowser不支持<style>标签，样式已在各元素中内联）"""
+        # QTextBrowser不支持<style>标签，所有样式都必须是内联的
+        # 这里只做简单的包装，不添加样式
+        return f'<div>{html_content}</div>'
     
     def highlight_code(self, code: str, language: str) -> str:
         """
@@ -620,7 +821,7 @@ if __name__ == "__main__":
     renderer = MarkdownRenderer()
     
     # 测试文本
-    test_markdown = """
+    test_markdown = r"""
 # 标题一
 
 ## 标题二
@@ -650,10 +851,17 @@ def hello():
 
 ![图片](https://via.placeholder.com/150)
 
+行内LaTeX公式：$E = mc^2$
+
+块级LaTeX公式：
+$$
+\frac{\partial MSE}{\partial w} = -\frac{2}{n}\sum_{i=1}^{n}x_i(y_i - \hat{y}_i)
+$$
+
 - [x] 已完成任务
 - [ ] 未完成任务
 """
-    
+
     # 渲染
     html_output = renderer.render(test_markdown)
     

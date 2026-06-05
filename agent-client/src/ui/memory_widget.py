@@ -62,8 +62,8 @@ class MemoryItemWidget(QFrame):
         id_label.setStyleSheet("color: #999;")
         layout.addWidget(id_label)
         
-        # 内容标签
-        content_label = QLabel(truncate_text(self.memory.content, 200))
+        # 内容标签 - 完整显示记忆内容
+        content_label = QLabel(self.memory.content)
         content_font = QFont()
         content_font.setPointSize(11)
         content_label.setFont(content_font)
@@ -122,6 +122,7 @@ class MemoryWidget(QWidget):
     memory_deleted = pyqtSignal(str)  # 记忆删除信号
     memories_cleared = pyqtSignal()    # 记忆清空信号
     memory_selected = pyqtSignal(str)  # 记忆选中信号
+    back_requested = pyqtSignal()      # 返回请求信号
     
     def __init__(
         self,
@@ -154,6 +155,27 @@ class MemoryWidget(QWidget):
         # 标题栏
         header_layout = QHBoxLayout()
         header_layout.setSpacing(10)
+        
+        # 返回按钮
+        self.back_btn = QPushButton("← 返回")
+        self.back_btn.setToolTip("返回会话页面")
+        self.back_btn.clicked.connect(self.back_requested.emit)
+        self.back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-size: 12px;
+                color: #666;
+            }
+            QPushButton:hover {
+                background-color: #f5f5f5;
+                border-color: #2196F3;
+                color: #2196F3;
+            }
+        """)
+        header_layout.addWidget(self.back_btn)
         
         title_label = QLabel("记忆管理")
         title_font = QFont()
@@ -211,12 +233,7 @@ class MemoryWidget(QWidget):
         
         main_layout.addLayout(button_layout)
         
-        # 记忆列表容器
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setMaximumHeight(300)
-        
-        # 记忆列表
+        # 记忆列表区域（带滚动条）
         self.list_widget = QListWidget()
         self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_widget.itemClicked.connect(self.on_memory_item_clicked)
@@ -227,25 +244,24 @@ class MemoryWidget(QWidget):
             }
             QListWidget::item {
                 border: none;
-                padding: 2px 0;
+                padding: 4px 8px;
             }
         """)
+        main_layout.addWidget(self.list_widget, 1)  # stretch=1，填充剩余空间
         
-        scroll_area.setWidget(self.list_widget)
-        main_layout.addWidget(scroll_area)
-        
-        # 空状态提示
+        # 空状态提示（居中显示在列表区域）
         self.empty_label = QLabel("暂无记忆")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setStyleSheet("""
             QLabel {
                 color: #999;
                 font-size: 14px;
-                padding: 20px;
+                padding: 40px;
+                background-color: transparent;
             }
         """)
         self.empty_label.hide()
-        main_layout.addWidget(self.empty_label)
+        main_layout.addWidget(self.empty_label, 1)  # stretch=1，与列表区域共享空间
         
         # 设置整体样式
         self.setStyleSheet("""
@@ -268,40 +284,34 @@ class MemoryWidget(QWidget):
     
     def display_memories(self):
         """显示记忆列表"""
-        logger.info(f"[DEBUG] display_memories() 开始: memories数量={len(self.memories) if self.memories else 0}")
         self.list_widget.clear()
         
         if not self.memories:
-            logger.info(f"[DEBUG] memories为空，调用show_empty_state()")
             self.show_empty_state()
             return
         
+        # 显示列表，隐藏空状态
+        self.list_widget.show()
         self.empty_label.hide()
-        logger.info(f"[DEBUG] empty_label已隐藏")
         
         # 更新计数
         self.count_label.setText(f"{len(self.memories)} 条记忆")
-        logger.info(f"[DEBUG] count_label已更新: {self.count_label.text()}")
         
         # 添加记忆项
-        for i, memory in enumerate(self.memories):
-            logger.info(f"[DEBUG] 添加第{i}个记忆项到list_widget: id={memory.id if hasattr(memory, 'id') else 'N/A'}")
+        for memory in self.memories:
             item = QListWidgetItem()
             item_widget = MemoryItemWidget(memory)
             item_widget.clicked.connect(self.on_memory_clicked)
             
-            # 设置sizeHint确保widget可见
+            # 设置sizeHint确保widget可见（根据内容动态调整高度）
             item.setSizeHint(item_widget.sizeHint())
             
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, item_widget)
-            logger.info(f"[DEBUG] 第{i}项已添加，widget size={item_widget.size().width()}x{item_widget.size().height()}")
-        
-        logger.info(f"[DEBUG] list_widget项目数: {self.list_widget.count()}")
     
     def show_empty_state(self):
         """显示空状态"""
-        logger.info(f"[DEBUG] show_empty_state() 被调用")
+        self.list_widget.hide()
         self.list_widget.clear()
         self.empty_label.show()
         self.count_label.setText("0 条记忆")

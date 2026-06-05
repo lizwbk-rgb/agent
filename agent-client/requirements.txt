@@ -23,6 +23,9 @@ openpyxl>=3.1.0
 markdown>=3.5.0
 pygments>=2.17.0
 
+# LaTeX渲染
+matplotlib>=3.7.0
+
 # 环境配置
 python-dotenv>=1.0.0
 

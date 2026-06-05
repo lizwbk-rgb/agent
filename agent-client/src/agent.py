@@ -19,6 +19,7 @@ from deepseek_client import DeepSeekClient, ChatResponse, UsageInfo
 from memory_manager import MemoryManager, Memory
 from utils.helpers import Message, truncate_text, format_timestamp
 from utils.file_processor import FileProcessor, extract_file_text
+from conversation_db import ConversationDB
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -97,11 +98,18 @@ class Agent:
         self.memory_manager = MemoryManager(user_id=self.user_id)
         self.file_processor = FileProcessor()
         
+        # 会话数据库
+        self.conversation_db = ConversationDB()
+        self.current_conversation_id = None
+        
         # 会话历史
         self.conversation_history: List[ConversationMessage] = []
         
         # 当前模式
         self.current_mode = ChatMode.ASK
+        
+        # 创建第一个会话
+        self.create_new_conversation()
         
         # 构建系统提示词
         self.system_prompt = self._build_system_prompt(system_prompt)
@@ -423,6 +431,23 @@ class Agent:
         )
         self.conversation_history.append(user_msg)
         
+        # 保存用户消息到数据库
+        if self.current_conversation_id:
+            self.conversation_db.save_message(
+                self.current_conversation_id,
+                "user",
+                user_message,
+                user_msg.timestamp,
+                file_path
+            )
+            
+            # 如果是第一条用户消息，生成会话标题（取前30字）
+            user_messages = [m for m in self.conversation_history if m.role == "user"]
+            if len(user_messages) == 1:
+                title = user_message[:30] + ("..." if len(user_message) > 30 else "")
+                self.conversation_db.update_conversation_title(self.current_conversation_id, title)
+                logger.info(f"自动生成会话标题: {title}")
+        
         # 4. 搜索相关记忆
         memory_context = self._search_related_memories(user_message)
         
@@ -447,6 +472,15 @@ class Agent:
                 content=response.content
             )
             self.conversation_history.append(assistant_msg)
+            
+            # 保存AI回复到数据库
+            if self.current_conversation_id:
+                self.conversation_db.save_message(
+                    self.current_conversation_id,
+                    "assistant",
+                    response.content,
+                    assistant_msg.timestamp
+                )
             
             # 9. 尝试从对话中提取记忆
             self._extract_memories_from_conversation(user_msg, assistant_msg)
@@ -532,10 +566,78 @@ AI: {truncate_text(assistant_msg.content, 500)}
     
     # ==================== 会话管理 ====================
     
-    def clear_conversation(self):
-        """清空对话历史"""
+    def create_new_conversation(self) -> str:
+        """
+        创建新会话
+        
+        Returns:
+            str: 新会话ID
+        """
+        # 创建新会话记录
+        conversation_id = self.conversation_db.create_conversation()
+        self.current_conversation_id = conversation_id
+        
+        # 清空当前对话历史
         self.conversation_history.clear()
-        logger.info("对话历史已清空")
+        
+        logger.info(f"创建新会话: {conversation_id}")
+        return conversation_id
+    
+    def load_conversation(self, conversation_id: str):
+        """
+        加载历史会话
+        
+        Args:
+            conversation_id: 会话ID
+        """
+        # 加载会话数据
+        data = self.conversation_db.load_conversation(conversation_id)
+        if data is None:
+            logger.error(f"加载会话失败: {conversation_id}")
+            return
+        
+        # 更新当前会话ID
+        self.current_conversation_id = conversation_id
+        
+        # 清空当前对话历史
+        self.conversation_history.clear()
+        
+        # 加载消息到对话历史
+        for msg_data in data["messages"]:
+            msg = ConversationMessage(
+                role=msg_data["role"],
+                content=msg_data["content"],
+                timestamp=datetime.strptime(msg_data["timestamp"], "%Y-%m-%d %H:%M:%S"),
+                file_path=msg_data["file_path"]
+            )
+            self.conversation_history.append(msg)
+        
+        logger.info(f"加载会话: {conversation_id}, 消息数: {len(data['messages'])}")
+    
+    def get_conversations(self) -> list:
+        """
+        获取会话列表
+        
+        Returns:
+            list: 会话列表
+        """
+        return self.conversation_db.get_conversations()
+    
+    def update_conversation_title(self, conversation_id: str, title: str):
+        """
+        更新会话标题
+        
+        Args:
+            conversation_id: 会话ID
+            title: 新标题
+        """
+        self.conversation_db.update_conversation_title(conversation_id, title)
+        logger.info(f"更新会话标题: {conversation_id} -> {title}")
+    
+    def clear_conversation(self):
+        """清空对话历史（创建新会话）"""
+        self.create_new_conversation()
+        logger.info("对话已清空，已创建新会话")
     
     def get_conversation_history(self) -> List[ConversationMessage]:
         """获取对话历史"""

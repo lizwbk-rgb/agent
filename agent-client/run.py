@@ -7,6 +7,7 @@ AI对话客户端 - 启动脚本
 
 import sys
 import os
+import subprocess
 from pathlib import Path
 
 # 抑制 HuggingFace 未认证警告
@@ -21,12 +22,28 @@ SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 sys.path.insert(0, str(PROJECT_ROOT))
 
+def check_and_install_dependencies():
+    """检查并安装必要的依赖"""
+    required_packages = [
+        ('matplotlib', 'matplotlib'),
+    ]
+    
+    for module_name, pip_name in required_packages:
+        try:
+            __import__(module_name)
+        except ImportError:
+            print(f"[启动] 正在安装 {pip_name}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
+            print(f"[启动] {pip_name} 安装完成")
 
 def main():
     """主函数"""
     print("\n" + "=" * 50)
     print("AI对话客户端")
     print("=" * 50)
+    
+    # 检查并安装依赖
+    check_and_install_dependencies()
     
     try:
         # 导入并运行应用

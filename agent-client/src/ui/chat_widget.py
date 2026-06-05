@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSplitter
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QEvent
+from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QEvent, QTimer
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCursor
 
 from agent import Agent, ChatMode, ChatResult
@@ -91,13 +91,30 @@ class MessageBubble(QFrame):
             file_label.setStyleSheet("color: #666;")
             layout.addWidget(file_label)
         
-        # 消息内容
-        content_label = QLabel()
-        content_label.setTextFormat(Qt.TextFormat.RichText)
-        content_label.setText(self._format_content())
-        content_label.setWordWrap(True)
-        content_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(content_label)
+        # 消息内容（使用MarkdownRenderer渲染）
+        renderer = MarkdownRenderer()
+        html_content = renderer.render(self.content)
+        
+        # 使用QTextBrowser代替QTextEdit，支持完整HTML/CSS
+        from PyQt6.QtWidgets import QTextBrowser
+        content_browser = QTextBrowser()
+        content_browser.setHtml(html_content)
+        content_browser.setReadOnly(True)
+        # 禁用滚动条，让内容自动展开
+        content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_browser.setStyleSheet("""
+            QTextBrowser {
+                border: none;
+                background-color: transparent;
+                font-size: 14px;
+            }
+        """)
+        # 先添加到布局，让QTextBrowser获得正确的宽度
+        layout.addWidget(content_browser)
+        
+        # 保存引用，在showEvent中调整高度
+        self._content_text_edit = content_browser
         
         # 设置样式
         if self.role == "user":
@@ -136,6 +153,31 @@ class MessageBubble(QFrame):
         text = text.replace('\n', '<br>')
         
         return text
+    
+    def _adjust_content_height(self):
+        """调整内容区域高度"""
+        if hasattr(self, '_content_text_edit') and self._content_text_edit:
+            # 获取文档高度
+            doc = self._content_text_edit.document()
+            # 使用documentLayout来获取更准确的高度
+            layout = doc.documentLayout()
+            if layout:
+                doc_height = layout.documentSize().height()
+            else:
+                doc_height = doc.size().height()
+            doc_height = int(doc_height) + 20  # +20 for padding
+            self._content_text_edit.setFixedHeight(doc_height)
+        # 清理timer
+        if hasattr(self, '_adjust_timer'):
+            self._adjust_timer = None
+    
+    def showEvent(self, event):
+        """显示事件 - 调整内容高度"""
+        super().showEvent(event)
+        # 延迟调整高度，确保布局完成
+        if hasattr(self, '_content_text_edit') and self._content_text_edit:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(100, self._adjust_content_height)
 
 
 class ChatWidget(QWidget):
@@ -149,6 +191,8 @@ class ChatWidget(QWidget):
     message_sent = pyqtSignal(str, str)  # 消息内容, 文件路径
     file_uploaded = pyqtSignal(str)      # 文件路径
     mode_changed = pyqtSignal(str)       # 模式（ask/craft）
+    new_conversation_requested = pyqtSignal()  # 新建对话请求
+    history_requested = pyqtSignal()         # 历史会话请求
     
     def __init__(
         self,
@@ -277,6 +321,45 @@ class ChatWidget(QWidget):
         
         mode_layout.addStretch()
         
+        # 新对话按钮（+）
+        self.new_conv_btn = QPushButton("+")
+        self.new_conv_btn.setToolTip("创建新对话")
+        self.new_conv_btn.setFixedSize(28, 28)
+        self.new_conv_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #ddd;
+                border-radius: 14px;
+                font-size: 16px;
+                font-weight: bold;
+                color: #666;
+            }
+            QPushButton:hover {
+                background-color: #f5f5f5;
+                border-color: #2196F3;
+                color: #2196F3;
+            }
+        """)
+        mode_layout.addWidget(self.new_conv_btn)
+        
+        # 历史会话按钮（时钟）
+        self.history_btn = QPushButton("🕐")
+        self.history_btn.setToolTip("历史会话记录")
+        self.history_btn.setFixedSize(28, 28)
+        self.history_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #ddd;
+                border-radius: 14px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #f5f5f5;
+                border-color: #2196F3;
+            }
+        """)
+        mode_layout.addWidget(self.history_btn)
+        
         input_layout.addLayout(mode_layout)
         
         # 消息输入框
@@ -391,6 +474,10 @@ class ChatWidget(QWidget):
         """设置信号连接"""
         # 模式切换
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
+        
+        # 新对话和历史按钮
+        self.new_conv_btn.clicked.connect(self.new_conversation_requested.emit)
+        self.history_btn.clicked.connect(self.history_requested.emit)
         
         # 输入框事件过滤器
         self.message_input.installEventFilter(self)
@@ -535,6 +622,37 @@ class ChatWidget(QWidget):
                 self.agent.clear_conversation()
             
             logger.info("对话已清空")
+    
+    def clear_chat_display(self):
+        """清空聊天显示（不显示确认对话框）"""
+        # 清空UI
+        while self.messages_layout.count():
+            item = self.messages_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        logger.info("聊天显示已清空")
+    
+    def load_conversation_history(self):
+        """加载会话历史到显示区域"""
+        if not self.agent:
+            logger.warning("Agent未设置，无法加载会话历史")
+            return
+        
+        # 清空当前显示
+        self.clear_chat_display()
+        
+        # 获取会话历史
+        history = self.agent.get_conversation_history()
+        
+        # 显示历史消息
+        for msg in history:
+            self.add_message(msg.content, msg.role)
+        
+        # 滚动到底部
+        self._scroll_to_bottom()
+        
+        logger.info(f"已加载会话历史: {len(history)} 条消息")
     
     def on_file_button_clicked(self):
         """文件按钮点击事件"""

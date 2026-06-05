@@ -26,7 +26,8 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QPushButton,
     QFrame,
-    QHeaderView
+    QHeaderView,
+    QStackedWidget
 )
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QAction, QActionGroup
@@ -35,82 +36,11 @@ from agent import Agent, ChatMode
 from config import get_config
 from ui.chat_widget import ChatWidget
 from ui.memory_widget import MemoryWidget
+from ui.history_widget import HistoryWidget
 
 # 配置日志
 logger = logging.getLogger(__name__)
 
-
-class MemoryManagerWindow(QMainWindow):
-    """
-    记忆管理独立窗口
-    
-    提供独立的记忆管理页面，包含记忆列表、刷新、删除、清空等功能
-    """
-    
-    def __init__(self, memory_manager, parent=None):
-        """
-        初始化记忆管理窗口
-        
-        Args:
-            memory_manager: 记忆管理器实例
-            parent: 父窗口
-        """
-        super().__init__(parent)
-        
-        self.memory_manager = memory_manager
-        
-        # 窗口设置
-        self.setWindowTitle("记忆管理")
-        self.setMinimumSize(700, 500)
-        
-        # 创建中央组件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 主布局
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        
-        # 创建记忆组件
-        self.memory_widget = MemoryWidget(self.memory_manager)
-        layout.addWidget(self.memory_widget)
-        
-        # 设置样式
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f5f5f5;
-            }
-        """)
-        
-        # 连接信号
-        self.memory_widget.memory_deleted.connect(self.on_memory_deleted)
-        self.memory_widget.memories_cleared.connect(self.on_memories_cleared)
-        
-        # 刷新记忆列表
-        self.memory_widget.refresh_memories()
-        
-        logger.info("记忆管理窗口初始化完成")
-    
-    def on_memory_deleted(self, memory_id: str):
-        """记忆删除事件"""
-        self.statusBar().showMessage(f"已删除记忆: {memory_id}")
-        logger.info(f"记忆管理窗口 - 已删除记忆: {memory_id}")
-    
-    def on_memories_cleared(self):
-        """记忆清空事件"""
-        self.statusBar().showMessage("所有记忆已清空")
-        logger.info("记忆管理窗口 - 所有记忆已清空")
-    
-    def refresh_memories(self):
-        """刷新记忆列表"""
-        self.memory_widget.refresh_memories()
-    
-    def closeEvent(self, event):
-        """关闭事件 - 隐藏窗口而不是真正关闭"""
-        event.ignore()
-        self.hide()
-        logger.info("记忆管理窗口已隐藏")
 
 
 class MainWindow(QMainWindow):
@@ -149,22 +79,37 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
         
-        # 中央容器
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
+        # 创建堆叠窗口（多页面）
+        self.stacked_widget = QStackedWidget()
+        self.setCentralWidget(self.stacked_widget)
         
-        # 主布局
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        # 页面0: 聊天页面
+        self.chat_page = QWidget()
+        chat_layout = QVBoxLayout(self.chat_page)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(0)
         
-        # 分割器
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        chat_layout.addWidget(self.main_splitter)
         
         # 强制初始化组件（跳过模式检查）
         self._setup_ask_mode()
         
-        main_layout.addWidget(self.main_splitter)
+        self.stacked_widget.addWidget(self.chat_page)
+        
+        # 页面1: 历史会话页面
+        self.history_widget = HistoryWidget(self.agent, self)
+        self.history_widget.conversation_selected.connect(self.on_history_conversation_selected)
+        self.history_widget.new_conversation_requested.connect(self.on_new_conversation)
+        self.history_widget.back_requested.connect(self.switch_to_chat_page)
+        self.stacked_widget.addWidget(self.history_widget)
+        
+        # 页面2: 记忆管理页面
+        self.memory_widget = MemoryWidget(self.agent.memory_manager, self)
+        self.memory_widget.memory_deleted.connect(self.on_memory_deleted)
+        self.memory_widget.memories_cleared.connect(self.on_memories_cleared)
+        self.memory_widget.back_requested.connect(self.switch_to_chat_page)
+        self.stacked_widget.addWidget(self.memory_widget)
         
         # 设置样式
         self.setStyleSheet("""
@@ -208,6 +153,18 @@ class MainWindow(QMainWindow):
         
         file_menu.addSeparator()
         
+        # 创建新对话
+        new_conversation_action = QAction("创建新对话", self)
+        new_conversation_action.triggered.connect(self.on_new_conversation)
+        file_menu.addAction(new_conversation_action)
+        
+        # 历史会话记录
+        history_action = QAction("历史会话记录", self)
+        history_action.triggered.connect(self.switch_to_history_page)
+        file_menu.addAction(history_action)
+        
+        file_menu.addSeparator()
+        
         # 退出
         exit_action = QAction("退出", self)
         exit_action.triggered.connect(self.close)
@@ -236,10 +193,10 @@ class MainWindow(QMainWindow):
         # 记忆菜单
         memory_menu = menubar.addMenu("记忆")
         
-        # 打开记忆管理
-        open_memory_action = QAction("打开记忆管理", self)
-        open_memory_action.triggered.connect(self.open_memory_manager)
-        memory_menu.addAction(open_memory_action)
+        # 记忆管理
+        memory_action = QAction("记忆管理", self)
+        memory_action.triggered.connect(self.switch_to_memory_page)
+        memory_menu.addAction(memory_action)
         
         memory_menu.addSeparator()
         
@@ -287,6 +244,8 @@ class MainWindow(QMainWindow):
         self.chat_widget.message_sent.connect(self.on_message_sent)
         self.chat_widget.file_uploaded.connect(self.on_file_uploaded)
         self.chat_widget.mode_changed.connect(self.on_mode_changed)
+        self.chat_widget.new_conversation_requested.connect(self.on_new_conversation)
+        self.chat_widget.history_requested.connect(self.switch_to_history_page)
         
         # Craft模式下连接工作区信号
         if self.current_mode == ChatMode.CRAFT:
@@ -489,22 +448,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'chat_widget'):
             self.chat_widget.set_workspace_path(workspace_path)
     
-    def open_memory_manager(self):
-        """打开记忆管理独立窗口"""
-        if not hasattr(self, '_memory_window') or self._memory_window is None:
-            self._memory_window = MemoryManagerWindow(self.agent.memory_manager, self)
-        
-        # 刷新记忆列表
-        self._memory_window.refresh_memories()
-        
-        # 显示窗口
-        self._memory_window.show()
-        self._memory_window.raise_()
-        self._memory_window.activateWindow()
-        
-        self.statusBar().showMessage("记忆管理窗口已打开")
-        logger.info("打开记忆管理窗口")
-    
     def on_memory_deleted(self, memory_id: str):
         """记忆删除事件"""
         self._update_memory_count()
@@ -564,10 +507,12 @@ class MainWindow(QMainWindow):
     
     def refresh_memories(self):
         """刷新记忆"""
-        # 如果记忆管理窗口已打开，刷新窗口中的记忆列表
-        if hasattr(self, '_memory_window') and self._memory_window and self._memory_window.isVisible():
-            self._memory_window.refresh_memories()
+        # 更新状态栏中的记忆计数
         self._update_memory_count()
+        
+        # 如果记忆管理页面当前可见，刷新页面中的记忆列表
+        if self.stacked_widget.currentIndex() == 2:  # 记忆管理页面索引为2
+            self.memory_widget.refresh_memories()
     
     def clear_all_memories(self):
         """清空所有记忆"""
@@ -636,6 +581,67 @@ class MainWindow(QMainWindow):
         """关闭事件"""
         self._save_settings()
         event.accept()
+    
+    # ==================== 页面切换 ====================
+    
+    def switch_to_chat_page(self):
+        """切换到聊天页面"""
+        self.stacked_widget.setCurrentIndex(0)
+        self.statusBar().showMessage("聊天页面")
+        logger.info("切换到聊天页面")
+    
+    def switch_to_history_page(self):
+        """切换到历史会话页面"""
+        self.stacked_widget.setCurrentIndex(1)
+        # 刷新历史列表
+        self.history_widget.refresh_histories()
+        self.statusBar().showMessage("历史会话记录")
+        logger.info("切换到历史会话页面")
+    
+    def switch_to_memory_page(self):
+        """切换到记忆管理页面"""
+        self.stacked_widget.setCurrentIndex(2)
+        # 刷新记忆列表
+        self.memory_widget.refresh_memories()
+        self.statusBar().showMessage("记忆管理")
+        logger.info("切换到记忆管理页面")
+    
+    def on_history_conversation_selected(self, conversation_id: str):
+        """
+        处理历史会话选择事件
+        
+        Args:
+            conversation_id: 会话ID
+        """
+        logger.info(f"选择历史会话: {conversation_id}")
+        
+        # 加载会话
+        self.agent.load_conversation(conversation_id)
+        
+        # 切换到聊天页面
+        self.switch_to_chat_page()
+        
+        # 更新聊天组件的显示
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.load_conversation_history()
+        
+        self.statusBar().showMessage(f"已加载历史会话: {conversation_id[:8]}")
+    
+    def on_new_conversation(self):
+        """处理新对话请求"""
+        logger.info("创建新对话")
+        
+        # 创建新会话
+        self.agent.create_new_conversation()
+        
+        # 切换到聊天页面
+        self.switch_to_chat_page()
+        
+        # 清空聊天组件的显示
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.clear_chat_display()
+        
+        self.statusBar().showMessage("已创建新对话")
 
 
 # 便捷函数
