@@ -95,6 +95,16 @@ class Config(BaseModel):
         """
         config = Config.from_env()
         
+        # 使用本地sentence-transformer模型 (384维)
+        embedder_config = {
+            "provider": "huggingface",
+            "config": {
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "embedding_dims": 384  # 显式指定维度
+            }
+        }
+        
+        # 使用远程Qdrant服务（localhost:6333）
         return {
             "llm": {
                 "provider": "openai",
@@ -106,16 +116,13 @@ class Config(BaseModel):
                     "max_tokens": 2000
                 }
             },
-            "embedder": {
-                "provider": "huggingface",
-                "config": {
-                    "model": "sentence-transformers/all-MiniLM-L6-v2"
-                }
-            },
+            "embedder": embedder_config,
             "vector_store": {
                 "provider": "qdrant",
                 "config": {
-                    "path": "data/qdrant.db"
+                    "host": config.QDRANT_HOST,
+                    "port": config.QDRANT_PORT,
+                    "collection_name": config.MEM0_COLLECTION_NAME
                 }
             },
             "history_db": {

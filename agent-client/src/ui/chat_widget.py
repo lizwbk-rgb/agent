@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QMessageBox,
-    QScrollArea
+    QScrollArea,
+    QSplitter
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QEvent
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCursor
@@ -184,6 +185,9 @@ class ChatWidget(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
         
+        # 使用分割器分割对话区域和输入区域（比例 8:2）
+        self.chat_splitter = QSplitter(Qt.Orientation.Vertical)
+        
         # 对话区域
         self.messages_container = QWidget()
         messages_layout = QVBoxLayout(self.messages_container)
@@ -222,7 +226,7 @@ class ChatWidget(QWidget):
             }
         """)
         
-        main_layout.addWidget(scroll_area)
+        self.chat_splitter.addWidget(scroll_area)
         
         # 输入区域
         input_container = QFrame()
@@ -278,7 +282,9 @@ class ChatWidget(QWidget):
         # 消息输入框
         self.message_input = QTextEdit()
         self.message_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，拖拽文件到此处上传)")
-        self.message_input.setMaximumHeight(120)
+        self.message_input.setMinimumHeight(40)
+        self.message_input.setMaximumHeight(200)  # 最大高度200px，超出显示滚动条
+        self.message_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.message_input.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #ddd;
@@ -361,7 +367,17 @@ class ChatWidget(QWidget):
         
         input_layout.addLayout(button_layout)
         
-        main_layout.addWidget(input_container)
+        # 限制输入容器的高度
+        input_container.setMaximumHeight(200)
+        
+        self.chat_splitter.addWidget(input_container)
+        self.chat_splitter.setStretchFactor(0, 7)  # 对话区域占 70%
+        self.chat_splitter.setStretchFactor(1, 3)  # 输入区域占 30%
+        
+        # 设置分割器的具体高度（像素值）
+        self.chat_splitter.setSizes([600, 250])
+        
+        main_layout.addWidget(self.chat_splitter)
         
         # 设置整体样式
         self.setStyleSheet("""

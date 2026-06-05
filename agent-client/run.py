@@ -9,6 +9,9 @@ import sys
 import os
 from pathlib import Path
 
+# 抑制 HuggingFace 未认证警告
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+
 # 切换到项目目录
 os.chdir(Path(__file__).parent)
 

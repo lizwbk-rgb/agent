@@ -591,8 +591,33 @@ AI: {truncate_text(assistant_msg.content, 500)}
         Returns:
             List[Dict]: 记忆列表
         """
-        memories = self.memory_manager.get_all()
-        return [mem.to_dict() for mem in memories]
+        logger.info(f"[DEBUG] agent.get_memories() 开始")
+        try:
+            memories = self.memory_manager.get_all()
+            logger.info(f"[DEBUG] memory_manager.get_all() 返回: type={type(memories)}, len={len(memories) if memories else 'None'}")
+            
+            result = []
+            for i, mem in enumerate(memories):
+                logger.info(f"[DEBUG] 处理第{i}个记忆: type={type(mem)}, has_to_dict={hasattr(mem, 'to_dict')}")
+                if hasattr(mem, 'to_dict'):
+                    try:
+                        d = mem.to_dict()
+                        result.append(d)
+                        logger.info(f"[DEBUG] 第{i}个记忆转为dict: id={d.get('id', 'N/A')}")
+                    except Exception as e2:
+                        logger.error(f"[DEBUG] 第{i}个记忆to_dict失败: {e2}")
+                elif isinstance(mem, dict):
+                    result.append(mem)
+                    logger.info(f"[DEBUG] 第{i}个记忆是dict: keys={list(mem.keys())[:5]}")
+                else:
+                    logger.warning(f"[DEBUG] 跳过非Memory对象: type={type(mem)}, value={str(mem)[:100]}")
+            logger.info(f"[DEBUG] agent.get_memories() 完成: 返回{len(result)}条")
+            return result
+        except Exception as e:
+            logger.error(f"[DEBUG] 获取记忆失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
     
     def delete_memory(self, memory_id: str) -> bool:
         """

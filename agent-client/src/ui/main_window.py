@@ -146,7 +146,8 @@ class MainWindow(QMainWindow):
         """初始化UI"""
         # 窗口设置
         self.setWindowTitle("AI对话客户端")
-        self.setMinimumSize(1024, 700)
+        self.setMinimumSize(1200, 800)
+        self.resize(1400, 900)
         
         # 中央容器
         central_widget = QWidget()
@@ -218,19 +219,19 @@ class MainWindow(QMainWindow):
         mode_group.setExclusive(True)
         
         # Ask模式
-        ask_action = QAction("Ask模式", self)
-        ask_action.setCheckable(True)
-        ask_action.setChecked(True)
-        ask_action.triggered.connect(lambda: self.set_mode(ChatMode.ASK))
-        mode_group.addAction(ask_action)
-        mode_menu.addAction(ask_action)
+        self.ask_action = QAction("Ask模式", self)
+        self.ask_action.setCheckable(True)
+        self.ask_action.setChecked(True)
+        self.ask_action.triggered.connect(lambda: self.set_mode(ChatMode.ASK))
+        mode_group.addAction(self.ask_action)
+        mode_menu.addAction(self.ask_action)
         
         # Craft模式
-        craft_action = QAction("Craft模式", self)
-        craft_action.setCheckable(True)
-        craft_action.triggered.connect(lambda: self.set_mode(ChatMode.CRAFT))
-        mode_group.addAction(craft_action)
-        mode_menu.addAction(craft_action)
+        self.craft_action = QAction("Craft模式", self)
+        self.craft_action.setCheckable(True)
+        self.craft_action.triggered.connect(lambda: self.set_mode(ChatMode.CRAFT))
+        mode_group.addAction(self.craft_action)
+        mode_menu.addAction(self.craft_action)
         
         # 记忆菜单
         memory_menu = menubar.addMenu("记忆")
@@ -338,6 +339,10 @@ class MainWindow(QMainWindow):
         # 更新菜单项状态
         self._update_menu_state()
         
+        # 更新模式菜单的勾选状态
+        self.ask_action.setChecked(mode == ChatMode.ASK)
+        self.craft_action.setChecked(mode == ChatMode.CRAFT)
+        
         # 更新状态栏
         self.mode_label.setText(f"模式: {mode.value}")
         self.statusBar().showMessage(f"已切换到 {mode.value} 模式")
@@ -362,6 +367,9 @@ class MainWindow(QMainWindow):
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
         
+        # 同步模式到chat_widget
+        self.chat_widget.set_mode(self.current_mode.value)
+        
         # 添加到分割器
         self.main_splitter.addWidget(self.chat_widget)
         
@@ -375,18 +383,22 @@ class MainWindow(QMainWindow):
         self.settings.setValue("mode", "ask")
     
     def _setup_craft_mode(self):
-        """设置Craft模式布局（文件树15% + 代码编辑器50% + 对话35%）"""
+        """设置Craft模式布局（文件树15% + 代码编辑器0% + 对话85%，默认隐藏代码编辑器）"""
         # 工作区组件（文件树）
         from .workspace_widget import WorkspaceWidget
         self.workspace_widget = WorkspaceWidget()
         
-        # 代码编辑器组件
+        # 代码编辑器组件（默认隐藏）
         from .code_editor_widget import CodeEditorWidget
         self.code_editor = CodeEditorWidget()
+        self.code_editor.setVisible(False)  # 默认隐藏
         
         # 对话组件
         self.chat_widget = ChatWidget(self.agent)
         self.chat_widget.setup_file_drop()
+        
+        # 同步模式到chat_widget
+        self.chat_widget.set_mode(self.current_mode.value)
         
         # 如果工作区已有路径，设置到chat_widget（用于文件引用）
         if self.workspace_widget.workspace_path:
@@ -396,16 +408,15 @@ class MainWindow(QMainWindow):
         self.center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.center_splitter.addWidget(self.code_editor)
         self.center_splitter.addWidget(self.chat_widget)
-        self.center_splitter.setStretchFactor(0, 60)
-        self.center_splitter.setStretchFactor(1, 40)
+        self.center_splitter.setStretchFactor(0, 0)  # 代码编辑器默认占 0%
+        self.center_splitter.setStretchFactor(1, 100)  # 对话占 100%
         
         # 添加到主分割器
         self.main_splitter.addWidget(self.workspace_widget)
         self.main_splitter.addWidget(self.center_splitter)
         
-        # 设置比例
-        self.main_splitter.setStretchFactor(0, 15)
-        self.main_splitter.setStretchFactor(1, 85)
+        # 设置比例（工作区200px，右侧区域占剩余空间）
+        self.main_splitter.setSizes([200, 1200])
         
         # 连接信号（包含工作区信号和代码编辑器信号）
         self._setup_connections()

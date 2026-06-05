@@ -186,18 +186,23 @@ class LocalMemoryStore(BaseMemoryStore):
         logger.info(f"添加记忆: {memory.id}")
         return memory.id
     
-    def search(self, query: str, limit: int = 10, user_id: str = None) -> List[Memory]:
+    def search(self, query: str, limit: int = 10, user_id: str = None, filters: dict = None) -> List[Memory]:
         """
         搜索记忆（简单文本匹配）
         
         Args:
             query: 查询文本
             limit: 返回数量限制
-            user_id: 用户ID
+            user_id: 用户ID（已弃用，请使用filters参数）
+            filters: 过滤条件，可包含user_id等字段
             
         Returns:
             List[Memory]: 按相关性排序的记忆列表
         """
+        # 从filters参数中提取user_id（优先），如果没有则使用user_id参数
+        if filters and 'user_id' in filters:
+            user_id = filters['user_id']
+        
         user_id = user_id or "default_user"
         memories = self.memories.get(user_id, [])
         
@@ -353,12 +358,67 @@ class MemoryManager:
             # 获取mem0配置
             mem0_config = Config.get_mem0_config()
             
+            # 在mem0初始化前，先确保Qdrant集合存在且维度正确
+            self._ensure_qdrant_collection(mem0_config)
+            
             # 初始化mem0（使用from_config方法）
             return Mem0Memory.from_config(mem0_config)
             
         except Exception as e:
             logger.warning(f"mem0初始化失败: {str(e)}，回退到本地存储")
             return LocalMemoryStore(self.data_dir)
+    
+    def _ensure_qdrant_collection(self, mem0_config: dict):
+        """确保Qdrant集合存在且维度正确（手动创建，避免mem0使用错误维度）"""
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client import models
+            
+            vector_store_config = mem0_config.get('vector_store', {}).get('config', {})
+            host = vector_store_config.get('host', 'localhost')
+            port = vector_store_config.get('port', 6333)
+            collection_name = vector_store_config.get('collection_name', 'mem0')
+            
+            # 预期维度（根据embedder配置）
+            expected_dims = 384  # all-MiniLM-L6-v2的维度
+            
+            client = QdrantClient(host=host, port=port, timeout=5)
+            
+            # 检查集合是否存在
+            try:
+                collection_info = client.get_collection(collection_name)
+                current_dims = collection_info.config.params.vectors.size
+                
+                if current_dims != expected_dims:
+                    logger.warning(f"集合 {collection_name} 维度不匹配: 期望{expected_dims}, 实际{current_dims}, 删除并手动重建")
+                    client.delete_collection(collection_name)
+                    # 手动创建正确维度的集合
+                    self._create_collection_with_correct_dims(client, collection_name, expected_dims)
+                else:
+                    logger.info(f"集合 {collection_name} 维度正确: {current_dims}")
+            except Exception:
+                # 集合不存在，手动创建
+                logger.info(f"集合 {collection_name} 不存在，手动创建（维度: {expected_dims}）")
+                self._create_collection_with_correct_dims(client, collection_name, expected_dims)
+                
+        except Exception as e:
+            logger.warning(f"检查Qdrant集合时出错: {e}")
+    
+    def _create_collection_with_correct_dims(self, client, collection_name: str, dims: int):
+        """创建指定维度的Qdrant集合"""
+        try:
+            from qdrant_client import models
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=models.VectorParams(
+                    size=dims,
+                    distance=models.Distance.COSINE
+                )
+            )
+            logger.info(f"已创建集合 {collection_name}，维度: {dims}")
+        except Exception as e:
+            logger.warning(f"创建集合 {collection_name} 失败: {e}")
+    
     
     # ==================== 记忆操作 ====================
     
@@ -382,22 +442,92 @@ class MemoryManager:
         
         return self.store.add(memory)
     
-    def search(self, query: str, limit: int = 10) -> List[Memory]:
+    def search(self, query: str, limit: int = 10, retry_on_error: bool = True) -> List[Memory]:
         """
         搜索记忆
         
         Args:
             query: 查询文本
             limit: 返回数量限制
+            retry_on_error: 遇到错误时是否重试
             
         Returns:
             List[Memory]: 按相关性排序的记忆列表
         """
         try:
-            return self.store.search(query, limit=limit, user_id=self.user_id)
+            # 尝试使用filters参数（mem0新版本）
+            results = self.store.search(query, limit=limit, filters={'user_id': self.user_id})
         except TypeError:
-            # 兼容LocalMemoryStore（不支持filters参数）
-            return self.store.search(query, limit, self.user_id)
+            try:
+                # 兼容旧版本（user_id作为顶层参数）
+                results = self.store.search(query, limit=limit, user_id=self.user_id)
+            except TypeError:
+                # 兼容LocalMemoryStore（不支持filters参数和user_id参数）
+                results = self.store.search(query, limit, self.user_id)
+        except ValueError as e:
+            # 捕获向量维度不匹配等错误
+            error_msg = str(e)
+            if "not aligned" in error_msg or "dimension" in error_msg.lower():
+                logger.error(f"向量维度不匹配错误: {error_msg}")
+                logger.error("请检查Qdrant集合的向量维度是否与当前模型匹配，或手动删除并重新创建集合。")
+                # 返回空列表，避免崩溃
+                return []
+            else:
+                # 重新抛出其他ValueError
+                raise
+        
+        # 将结果转换为Memory对象列表
+        return self._convert_to_memories(results)
+    
+    def _convert_to_memories(self, results) -> List[Memory]:
+        """
+        将搜索结果转换为Memory对象列表
+        
+        Args:
+            results: mem0返回的原始数据
+            
+        Returns:
+            List[Memory]: Memory对象列表
+        """
+        logger.info(f"[DEBUG] _convert_to_memories() 开始: type={type(results)}, len={len(results) if results else 'None'}")
+        
+        if not results:
+            logger.info(f"[DEBUG] results为空")
+            return []
+        
+        if isinstance(results, list):
+            memories = []
+            for i, item in enumerate(results):
+                logger.info(f"[DEBUG] 处理第{i}项: type={type(item)}, value={str(item)[:200]}")
+                if isinstance(item, Memory):
+                    memories.append(item)
+                    logger.info(f"[DEBUG] 第{i}项是Memory对象: id={item.id}")
+                elif isinstance(item, dict):
+                    try:
+                        mem = Memory.from_dict(item)
+                        memories.append(mem)
+                        logger.info(f"[DEBUG] 第{i}项转换为Memory: id={mem.id}, content={mem.content[:50]}")
+                    except Exception as e:
+                        logger.warning(f"[DEBUG] 转换记忆失败: {e}, item keys={list(item.keys()) if isinstance(item, dict) else 'N/A'}")
+                elif isinstance(item, str):
+                    logger.warning(f"[DEBUG] 记忆数据为字符串，跳过: {item[:100]}")
+                else:
+                    logger.warning(f"[DEBUG] 未知的记忆数据类型: {type(item)}")
+            logger.info(f"[DEBUG] _convert_to_memories() 完成: 返回{len(memories)}条记忆")
+            return memories
+        elif isinstance(results, dict):
+            # mem0可能返回单个字典
+            logger.info(f"[DEBUG] results是dict: keys={list(results.keys())[:10]}")
+            try:
+                mem = Memory.from_dict(results)
+                logger.info(f"[DEBUG] 转换为Memory: id={mem.id}")
+                return [mem]
+            except Exception as e:
+                logger.warning(f"[DEBUG] 转换记忆失败: {e}")
+                return []
+        
+        logger.warning(f"[DEBUG] results类型不支持: {type(results)}")
+        return []
     
     def get(self, memory_id: str) -> Optional[Memory]:
         """
@@ -409,7 +539,16 @@ class MemoryManager:
         Returns:
             Memory: 记忆对象，不存在返回None
         """
-        return self.store.get(memory_id, self.user_id)
+        try:
+            # 尝试不带user_id参数调用（mem0新版本）
+            return self.store.get(memory_id)
+        except TypeError:
+            try:
+                # 兼容旧版本（带user_id参数）
+                return self.store.get(memory_id, user_id=self.user_id)
+            except TypeError:
+                # 兼容LocalMemoryStore（带user_id位置参数）
+                return self.store.get(memory_id, self.user_id)
     
     def update(self, memory_id: str, content: str) -> bool:
         """
@@ -422,7 +561,16 @@ class MemoryManager:
         Returns:
             bool: 是否成功
         """
-        return self.store.update(memory_id, content, self.user_id)
+        try:
+            # 尝试不带user_id参数调用（mem0新版本）
+            return self.store.update(memory_id, content)
+        except TypeError:
+            try:
+                # 兼容旧版本（带user_id参数）
+                return self.store.update(memory_id, content, user_id=self.user_id)
+            except TypeError:
+                # 兼容LocalMemoryStore（带user_id位置参数）
+                return self.store.update(memory_id, content, self.user_id)
     
     def delete(self, memory_id: str) -> bool:
         """
@@ -434,7 +582,16 @@ class MemoryManager:
         Returns:
             bool: 是否成功
         """
-        return self.store.delete(memory_id, self.user_id)
+        try:
+            # 尝试不带user_id参数调用（mem0新版本）
+            return self.store.delete(memory_id)
+        except TypeError:
+            try:
+                # 兼容旧版本（带user_id参数）
+                return self.store.delete(memory_id, user_id=self.user_id)
+            except TypeError:
+                # 兼容LocalMemoryStore（带user_id位置参数）
+                return self.store.delete(memory_id, self.user_id)
     
     def clear(self) -> bool:
         """
@@ -443,7 +600,16 @@ class MemoryManager:
         Returns:
             bool: 是否成功
         """
-        return self.store.clear(self.user_id)
+        try:
+            # 尝试不带user_id参数调用（mem0新版本）
+            return self.store.clear()
+        except TypeError:
+            try:
+                # 兼容旧版本（带user_id参数）
+                return self.store.clear(user_id=self.user_id)
+            except TypeError:
+                # 兼容LocalMemoryStore（带user_id位置参数）
+                return self.store.clear(self.user_id)
     
     def get_all(self) -> List[Memory]:
         """
@@ -452,7 +618,61 @@ class MemoryManager:
         Returns:
             List[Memory]: 记忆列表，按ID倒序排列
         """
-        return self.store.get_all(self.user_id)
+        logger.info(f"[DEBUG] get_all() 开始，user_id={self.user_id}")
+        results = None
+        
+        try:
+            # 尝试使用filters参数（mem0新版本）
+            logger.info(f"[DEBUG] 尝试 store.get_all(filters={{'user_id': ...}})")
+            results = self.store.get_all(filters={'user_id': self.user_id})
+            logger.info(f"[DEBUG] store.get_all(filters) 返回: type={type(results)}, len={len(results) if results else 'None'}")
+        except TypeError as e:
+            logger.warning(f"[DEBUG] TypeError: {e}，尝试旧版本")
+            try:
+                # 兼容旧版本（带user_id参数）
+                logger.info(f"[DEBUG] 尝试 store.get_all(user_id=...)")
+                results = self.store.get_all(user_id=self.user_id)
+                logger.info(f"[DEBUG] store.get_all(user_id) 返回: type={type(results)}, len={len(results) if results else 'None'}")
+            except TypeError as e2:
+                logger.warning(f"[DEBUG] TypeError2: {e2}，尝试位置参数")
+                try:
+                    # 兼容LocalMemoryStore（带user_id位置参数）
+                    logger.info(f"[DEBUG] 尝试 store.get_all(位置参数)")
+                    results = self.store.get_all(self.user_id)
+                    logger.info(f"[DEBUG] store.get_all(位置) 返回: type={type(results)}, len={len(results) if results else 'None'}")
+                except Exception as e3:
+                    logger.error(f"[DEBUG] 所有调用都失败: {e3}")
+                    return []
+        
+        # 打印原始结果用于调试
+        if results:
+            logger.info(f"[DEBUG] 原始结果: {results[:3] if len(results) > 3 else results}")
+        
+        # 将结果转换为Memory对象列表
+        if results and isinstance(results, list):
+            memories = []
+            for i, item in enumerate(results):
+                logger.info(f"[DEBUG] 处理第{i}项: type={type(item)}, value={str(item)[:200]}")
+                if isinstance(item, Memory):
+                    memories.append(item)
+                    logger.info(f"[DEBUG] 第{i}项是Memory对象")
+                elif isinstance(item, dict):
+                    try:
+                        mem = Memory.from_dict(item)
+                        memories.append(mem)
+                        logger.info(f"[DEBUG] 第{i}项转换为Memory: id={mem.id}")
+                    except Exception as e:
+                        logger.warning(f"[DEBUG] 转换记忆失败: {e}, item: {item}")
+                elif isinstance(item, str):
+                    logger.warning(f"[DEBUG] 记忆数据为字符串，跳过: {item[:100]}")
+                else:
+                    logger.warning(f"[DEBUG] 未知的记忆数据类型: {type(item)}")
+            logger.info(f"[DEBUG] get_all() 完成，返回 {len(memories)} 条记忆")
+            return memories
+        else:
+            logger.warning(f"[DEBUG] results不是list或为空: type={type(results)}, value={results}")
+        
+        return []
     
     # ==================== 便捷方法 ====================
     

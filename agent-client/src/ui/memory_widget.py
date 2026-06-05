@@ -268,28 +268,40 @@ class MemoryWidget(QWidget):
     
     def display_memories(self):
         """显示记忆列表"""
+        logger.info(f"[DEBUG] display_memories() 开始: memories数量={len(self.memories) if self.memories else 0}")
         self.list_widget.clear()
         
         if not self.memories:
+            logger.info(f"[DEBUG] memories为空，调用show_empty_state()")
             self.show_empty_state()
             return
         
         self.empty_label.hide()
+        logger.info(f"[DEBUG] empty_label已隐藏")
         
         # 更新计数
         self.count_label.setText(f"{len(self.memories)} 条记忆")
+        logger.info(f"[DEBUG] count_label已更新: {self.count_label.text()}")
         
         # 添加记忆项
-        for memory in self.memories:
+        for i, memory in enumerate(self.memories):
+            logger.info(f"[DEBUG] 添加第{i}个记忆项到list_widget: id={memory.id if hasattr(memory, 'id') else 'N/A'}")
             item = QListWidgetItem()
             item_widget = MemoryItemWidget(memory)
             item_widget.clicked.connect(self.on_memory_clicked)
             
+            # 设置sizeHint确保widget可见
+            item.setSizeHint(item_widget.sizeHint())
+            
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, item_widget)
+            logger.info(f"[DEBUG] 第{i}项已添加，widget size={item_widget.size().width()}x{item_widget.size().height()}")
+        
+        logger.info(f"[DEBUG] list_widget项目数: {self.list_widget.count()}")
     
     def show_empty_state(self):
         """显示空状态"""
+        logger.info(f"[DEBUG] show_empty_state() 被调用")
         self.list_widget.clear()
         self.empty_label.show()
         self.count_label.setText("0 条记忆")
