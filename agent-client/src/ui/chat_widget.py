@@ -46,6 +46,7 @@ class MessageBubble(QFrame):
         role: str,
         timestamp: datetime = None,
         file_path: str = None,
+        is_thinking: bool = False,
         parent=None
     ):
         """
@@ -56,6 +57,7 @@ class MessageBubble(QFrame):
             role: 角色（user/assistant）
             timestamp: 时间戳
             file_path: 附件文件路径
+            is_thinking: 是否是思考中状态
             parent: 父组件
         """
         super().__init__(parent)
@@ -63,6 +65,7 @@ class MessageBubble(QFrame):
         self.role = role
         self.timestamp = timestamp or datetime.now()
         self.file_path = file_path
+        self.is_thinking = is_thinking
         
         self.setup_ui()
     
@@ -126,13 +129,26 @@ class MessageBubble(QFrame):
                 }
             """)
         else:
-            self.setStyleSheet("""
-                MessageBubble {
-                    background-color: #f5f5f5;
-                    border: 1px solid #e0e0e0;
-                    border-radius: 12px;
-                }
-            """)
+            # AI消息样式
+            if self.is_thinking:
+                # 思考中状态样式
+                self.setStyleSheet("""
+                    MessageBubble {
+                        background-color: #fff3e0;
+                        border: 1px solid #ffe0b2;
+                        border-radius: 12px;
+                    }
+                """)
+                # 设置思考中文本
+                self._content_text_edit.setText(self.content)
+            else:
+                self.setStyleSheet("""
+                    MessageBubble {
+                        background-color: #f5f5f5;
+                        border: 1px solid #e0e0e0;
+                        border-radius: 12px;
+                    }
+                """)
     
     def _format_content(self) -> str:
         """格式化内容为HTML"""
@@ -178,6 +194,62 @@ class MessageBubble(QFrame):
         if hasattr(self, '_content_text_edit') and self._content_text_edit:
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(100, self._adjust_content_height)
+    
+    def update_content(self, new_content: str):
+        """
+        更新消息内容（用于流式更新）
+        
+        Args:
+            new_content: 新的消息内容
+        """
+        self.content = new_content
+        
+        # 重新渲染Markdown（使用单例renderer避免重复创建）
+        renderer = MarkdownRenderer.get_instance()
+        html_content = renderer.render(new_content)
+        
+        # 更新显示
+        if hasattr(self, '_content_text_edit') and self._content_text_edit:
+            self._content_text_edit.setHtml(html_content)
+            # 延迟调整高度
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, self._adjust_content_height)
+    
+    def set_thinking_state(self, is_thinking: bool):
+        """
+        设置思考中状态
+        
+        Args:
+            is_thinking: 是否是思考中状态
+        """
+        self.is_thinking = is_thinking
+        
+        # 更新内容显示
+        if is_thinking:
+            self.content = "AI思考中，请稍后......"
+            self._content_text_edit.setText(self.content)
+        
+        # 更新样式
+        self._update_thinking_style()
+    
+    def _update_thinking_style(self):
+        """更新思考中状态样式"""
+        if self.role == "assistant" and self.is_thinking:
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: #fff3e0;
+                    border: 1px solid #ffe0b2;
+                    border-radius: 12px;
+                }
+            """)
+        elif self.role == "assistant":
+            self.setStyleSheet("""
+                MessageBubble {
+                    background-color: #f5f5f5;
+                    border: 1px solid #e0e0e0;
+                    border-radius: 12px;
+                }
+            """)
 
 
 class ChatWidget(QWidget):
@@ -193,6 +265,8 @@ class ChatWidget(QWidget):
     mode_changed = pyqtSignal(str)       # 模式（ask/craft）
     new_conversation_requested = pyqtSignal()  # 新建对话请求
     history_requested = pyqtSignal()         # 历史会话请求
+    model_changed = pyqtSignal(str)          # 模型变化信号
+    thinking_state_changed = pyqtSignal(bool)  # 深度思考状态变化信号
     
     def __init__(
         self,
@@ -213,6 +287,12 @@ class ChatWidget(QWidget):
         self.markdown_renderer = MarkdownRenderer()
         self.workspace_path = None  # 工作区路径，用于文件引用
         self._from_input_at = False  # 标志：是否来自输入框@触发
+        
+        # 深度思考状态
+        self._deep_think_enabled = False
+        
+        # 当前AI消息气泡引用（用于流式更新）
+        self._current_ai_bubble = None
         
         # 文件引用弹出框
         self.file_reference_popup = FileReferencePopup(self)
@@ -285,16 +365,18 @@ class ChatWidget(QWidget):
         input_layout.setContentsMargins(16, 12, 16, 12)
         input_layout.setSpacing(8)
         
-        # 模式切换
+        # 模式切换行1：模式选择、模型选择、深度思考
         mode_layout = QHBoxLayout()
         mode_layout.setSpacing(8)
         
+        # 模式标签
         mode_label = QLabel("模式:")
         mode_font = QFont()
         mode_font.setPointSize(11)
         mode_label.setFont(mode_font)
         mode_layout.addWidget(mode_label)
         
+        # 模式下拉框
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Ask（问答）", "Craft（创作）"])
         self.mode_combo.setMinimumWidth(120)
@@ -304,6 +386,7 @@ class ChatWidget(QWidget):
                 border: 1px solid #ddd;
                 border-radius: 4px;
                 background-color: #fff;
+                font-size: 11px;
             }
             QComboBox:hover {
                 border-color: #999;
@@ -318,6 +401,16 @@ class ChatWidget(QWidget):
             }
         """)
         mode_layout.addWidget(self.mode_combo)
+        
+        # 模型选择器
+        from ui.model_selector import ModelSelector
+        self.model_selector = ModelSelector()
+        mode_layout.addWidget(self.model_selector)
+        
+        # 深度思考按钮
+        from ui.deep_think_button import DeepThinkButton
+        self.deep_think_btn = DeepThinkButton()
+        mode_layout.addWidget(self.deep_think_btn)
         
         mode_layout.addStretch()
         
@@ -475,6 +568,12 @@ class ChatWidget(QWidget):
         # 模式切换
         self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         
+        # 模型选择器
+        self.model_selector.model_changed.connect(self.on_model_changed)
+        
+        # 深度思考按钮
+        self.deep_think_btn.state_changed.connect(self.on_deep_think_state_changed)
+        
         # 新对话和历史按钮
         self.new_conv_btn.clicked.connect(self.new_conversation_requested.emit)
         self.history_btn.clicked.connect(self.history_requested.emit)
@@ -543,40 +642,211 @@ class ChatWidget(QWidget):
         if not content:
             return
         
+        # 检查是否正在处理消息
+        if hasattr(self, '_chat_worker') and self._chat_worker.isRunning():
+            logger.warning("正在处理消息，请稍候...")
+            return
+        
         # 清空输入框
         self.message_input.clear()
         
         # 发送信号
         self.message_sent.emit(content, "")
         
-        # 如果有agent，直接处理
+        # 如果有agent，直接处理（使用流式）
         if self.agent:
-            self._process_message(content)
+            self._process_message_stream(content)
     
-    def _process_message(self, content: str, file_path: str = None):
-        """处理消息"""
+    def _process_message_stream(self, content: str, file_path: str = None):
+        """流式处理消息"""
         try:
-            # 显示用户消息
+            # 1. 显示用户消息
             self.add_message(content, "user", file_path=file_path)
             
-            # 调用agent
-            result: ChatResult = self.agent.chat(content, file_path=file_path)
+            # 2. 显示AI思考中占位消息
+            ai_bubble = self.add_message("AI思考中，请稍后......", "assistant", is_thinking=True)
+            self._current_ai_bubble = ai_bubble
             
-            # 显示AI回复
-            self.add_message(result.response, "assistant")
+            # 3. 如果启用深度思考，显示思考区域
+            if self._deep_think_enabled:
+                self._show_thinking_area()
             
-            # 滚动到底部
-            self._scroll_to_bottom()
+            # 4. 禁用发送按钮
+            self._disable_send_button()
+            
+            # 5. 启动ChatWorker线程
+            from ui.chat_worker import ChatWorker
+            
+            self._chat_worker = ChatWorker(
+                agent=self.agent,
+                user_message=content,
+                file_path=file_path,
+                enable_thinking=self._deep_think_enabled,
+                model=self.model_selector.get_current_model()
+            )
+            
+            # 连接信号
+            self._chat_worker.content_update.connect(self._on_content_update)
+            self._chat_worker.thinking_update.connect(self._on_thinking_update)
+            self._chat_worker.finished.connect(self._on_chat_finished)
+            self._chat_worker.error.connect(self._on_chat_error)
+            self._chat_worker.thinking_started.connect(self._on_thinking_started)
+            self._chat_worker.thinking_finished.connect(self._on_thinking_finished)
+            
+            # 启动线程
+            self._chat_worker.start()
             
         except Exception as e:
             logger.error(f"处理消息失败: {str(e)}")
-            self.add_message(f"错误: {str(e)}", "assistant")
+            # 移除占位消息
+            if self._current_ai_bubble:
+                self._current_ai_bubble.set_thinking_state(False)
+                self._current_ai_bubble.update_content(f"错误: {str(e)}")
+            self._enable_send_button()
+    
+    def _on_content_update(self, content: str):
+        """处理流式内容更新"""
+        if self._current_ai_bubble:
+            # 更新占位消息的内容
+            self._current_ai_bubble.set_thinking_state(False)
+            self._current_ai_bubble.update_content(content)
+            self._scroll_to_bottom()
+    
+    def _on_thinking_update(self, thinking_content: str):
+        """处理深度思考内容更新"""
+        if hasattr(self, '_thinking_area') and self._thinking_area:
+            try:
+                self._thinking_area.update_content(thinking_content)
+            except RuntimeError:
+                # 思考区域已被删除
+                self._thinking_area = None
+    
+    def _on_chat_finished(self, content: str, usage_dict: dict):
+        """处理聊天完成"""
+        logger.info(f"聊天完成 - 内容长度: {len(content)}")
+        
+        # 更新最终内容
+        if self._current_ai_bubble:
+            self._current_ai_bubble.set_thinking_state(False)
+            self._current_ai_bubble.update_content(content)
+        
+        # 启用发送按钮
+        self._enable_send_button()
+        
+        # 清除当前AI气泡引用
+        self._current_ai_bubble = None
+        
+        # 滚动到底部
+        self._scroll_to_bottom()
+    
+    def _on_chat_error(self, error_msg: str):
+        """处理聊天错误"""
+        logger.error(f"聊天错误: {error_msg}")
+        
+        # 更新错误信息
+        if self._current_ai_bubble:
+            self._current_ai_bubble.set_thinking_state(False)
+            self._current_ai_bubble.update_content(f"错误: {error_msg}")
+        
+        # 启用发送按钮
+        self._enable_send_button()
+        
+        # 清除当前AI气泡引用
+        self._current_ai_bubble = None
+    
+    def _on_thinking_started(self):
+        """处理思考开始"""
+        logger.info("深度思考开始")
+        if hasattr(self, '_thinking_area') and self._thinking_area:
+            try:
+                self._thinking_area.show_thinking()
+            except RuntimeError:
+                # 思考区域已被删除
+                self._thinking_area = None
+    
+    def _on_thinking_finished(self, thinking_content: str):
+        """处理思考结束"""
+        logger.info("深度思考结束")
+        # 思考结束后更新显示"思考结束"
+        if hasattr(self, '_thinking_area') and self._thinking_area:
+            try:
+                self._thinking_area.set_thinking_finished()
+            except RuntimeError:
+                # 思考区域已被删除
+                self._thinking_area = None
+    
+    def _show_thinking_area(self):
+        """显示思考区域"""
+        from ui.thinking_area import ThinkingArea
+        
+        # 检查是否已有思考区域且未被删除
+        need_create = False
+        if not hasattr(self, '_thinking_area') or not self._thinking_area:
+            need_create = True
+        else:
+            # 检查对象是否已被删除
+            try:
+                # 尝试访问一个属性，如果对象已删除会抛出RuntimeError
+                _ = self._thinking_area.isVisible()
+            except RuntimeError:
+                # 对象已被删除，需要重新创建
+                need_create = True
+                self._thinking_area = None
+        
+        # 如果没有思考区域或已被删除，创建一个
+        if need_create:
+            self._thinking_area = ThinkingArea()
+            # 插入到当前AI消息之前
+            ai_bubble_index = self.messages_layout.indexOf(self._current_ai_bubble)
+            self.messages_layout.insertWidget(ai_bubble_index, self._thinking_area)
+        
+        self._thinking_area.show_thinking()
+    
+    def _disable_send_button(self):
+        """禁用发送按钮"""
+        # 找到发送按钮并禁用
+        for btn in self.findChildren(QPushButton):
+            if btn.text() == "发送":
+                btn.setEnabled(False)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #ccc;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        font-weight: bold;
+                    }
+                """)
+                break
+    
+    def _enable_send_button(self):
+        """启用发送按钮"""
+        for btn in self.findChildren(QPushButton):
+            if btn.text() == "发送":
+                btn.setEnabled(True)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: none;
+                        border-radius: 6px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #1976D2;
+                    }
+                    QPushButton:pressed {
+                        background-color: #1565C0;
+                    }
+                """)
+                break
     
     def add_message(
         self,
         content: str,
         role: str,
-        file_path: str = None
+        file_path: str = None,
+        is_thinking: bool = False
     ):
         """
         添加消息到对话区域
@@ -585,12 +855,17 @@ class ChatWidget(QWidget):
             content: 消息内容
             role: 角色（user/assistant）
             file_path: 附件文件路径
+            is_thinking: 是否是思考中状态
+            
+        Returns:
+            MessageBubble: 消息气泡组件
         """
         # 创建消息气泡
         message_widget = MessageBubble(
             content=content,
             role=role,
-            file_path=file_path
+            file_path=file_path,
+            is_thinking=is_thinking
         )
         
         # 添加到布局
@@ -598,6 +873,8 @@ class ChatWidget(QWidget):
         
         # 滚动到底部
         self._scroll_to_bottom()
+        
+        return message_widget
     
     def clear_conversation(self):
         """清空对话"""
@@ -631,6 +908,9 @@ class ChatWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
         
+        # 清除思考区域引用（组件已被删除）
+        self._thinking_area = None
+        
         logger.info("聊天显示已清空")
     
     def load_conversation_history(self):
@@ -647,7 +927,18 @@ class ChatWidget(QWidget):
         
         # 显示历史消息
         for msg in history:
-            self.add_message(msg.content, msg.role)
+            if msg.role == "thinking":
+                # 思考内容：显示在思考区域中，而不是作为普通消息
+                from ui.thinking_area import ThinkingArea
+                thinking_area = ThinkingArea()
+                thinking_area.set_content(msg.content)
+                thinking_area.set_thinking_finished()
+                thinking_area.collapse()  # 默认折叠，用户可以点击展开
+                self.messages_layout.addWidget(thinking_area)
+                self._thinking_area = thinking_area  # 保存引用
+            else:
+                # 普通消息（user/assistant）：正常显示
+                self.add_message(msg.content, msg.role)
         
         # 滚动到底部
         self._scroll_to_bottom()
@@ -682,6 +973,34 @@ class ChatWidget(QWidget):
         
         self.mode_changed.emit(mode_str)
         logger.info(f"切换模式: {mode_str}")
+    
+    def on_model_changed(self, model: str):
+        """模型变化事件"""
+        logger.info(f"切换模型: {model}")
+        # 发出信号
+        self.model_changed.emit(model)
+        
+        # 更新agent的客户端模型
+        if self.agent:
+            self.agent.deepseek_client.set_model(model)
+    
+    def on_deep_think_state_changed(self, enabled: bool):
+        """深度思考状态变化事件"""
+        self._deep_think_enabled = enabled
+        logger.info(f"深度思考模式{'启用' if enabled else '禁用'}")
+        self.thinking_state_changed.emit(enabled)
+    
+    def set_deep_think_enabled(self, enabled: bool):
+        """设置深度思考启用状态"""
+        self.deep_think_btn.set_enabled(enabled)
+    
+    def is_deep_think_enabled(self) -> bool:
+        """获取深度思考启用状态"""
+        return self._deep_think_enabled
+    
+    def get_current_model(self) -> str:
+        """获取当前选择的模型"""
+        return self.model_selector.get_current_model()
     
     def get_current_mode(self) -> str:
         """获取当前模式"""

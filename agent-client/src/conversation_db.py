@@ -7,9 +7,12 @@
 import sqlite3
 import uuid
 import os
+import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationDB:

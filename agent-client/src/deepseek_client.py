@@ -93,7 +93,8 @@ class DeepSeekClient:
         
         self.api_key = api_key or config.DEEPSEEK_API_KEY
         self.base_url = base_url or config.DEEPSEEK_BASE_URL
-        self.model = model or config.DEEPSEEK_MODEL
+        self.default_model = model or config.DEEPSEEK_MODEL
+        self.model = self.default_model
         self.timeout = timeout
         self.max_retries = max_retries
         
@@ -105,6 +106,20 @@ class DeepSeekClient:
         )
         
         logger.info(f"DeepSeek客户端初始化完成 - Model: {self.model}, Base URL: {self.base_url}")
+    
+    def set_model(self, model: str):
+        """
+        动态设置模型
+        
+        Args:
+            model: 模型名称
+        """
+        self.model = model
+        logger.info(f"切换模型: {model}")
+    
+    def get_model(self) -> str:
+        """获取当前模型"""
+        return self.model
     
     def chat(
         self,

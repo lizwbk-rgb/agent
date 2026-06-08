@@ -237,6 +237,14 @@ class MainWindow(QMainWindow):
         self.workspace_label = QLabel("工作区: 未设置")
         statusbar.addWidget(self.workspace_label)
         
+        # 模型标签
+        self.model_label = QLabel("模型: deepseek-v4-pro")
+        statusbar.addWidget(self.model_label)
+        
+        # 深度思考标签
+        self.thinking_label = QLabel("思考: 关")
+        statusbar.addWidget(self.thinking_label)
+        
         statusbar.showMessage("就绪")
     
     def _setup_connections(self):
@@ -247,6 +255,12 @@ class MainWindow(QMainWindow):
         self.chat_widget.mode_changed.connect(self.on_mode_changed)
         self.chat_widget.new_conversation_requested.connect(self.on_new_conversation)
         self.chat_widget.history_requested.connect(self.switch_to_history_page)
+        
+        # 模型和深度思考状态信号
+        if hasattr(self.chat_widget, 'model_changed'):
+            self.chat_widget.model_changed.connect(self.on_model_changed)
+        if hasattr(self.chat_widget, 'thinking_state_changed'):
+            self.chat_widget.thinking_state_changed.connect(self.on_thinking_state_changed)
         
         # Craft模式下连接工作区信号
         if self.current_mode == ChatMode.CRAFT:
@@ -405,6 +419,17 @@ class MainWindow(QMainWindow):
         file_name = os.path.basename(file_path)
         logger.info(f"上传文件: {file_name}")
         self.statusBar().showMessage(f"已上传: {file_name}")
+    
+    def on_model_changed(self, model: str):
+        """模型变化事件"""
+        logger.info(f"模型切换: {model}")
+        self.model_label.setText(f"模型: {model}")
+        self.statusBar().showMessage(f"已切换模型: {model}")
+    
+    def on_thinking_state_changed(self, enabled: bool):
+        """深度思考状态变化事件"""
+        logger.info(f"深度思考{'启用' if enabled else '禁用'}")
+        self.thinking_label.setText(f"思考: {'开' if enabled else '关'}")
     
     def on_mode_changed(self, mode: str):
         """模式切换事件"""

@@ -19,6 +19,16 @@ class Config(BaseModel):
     DEEPSEEK_BASE_URL: str = Field(default="https://api.deepseek.com", description="DeepSeek API基础URL")
     DEEPSEEK_MODEL: str = Field(default="deepseek-chat", description="DeepSeek模型名称")
     
+    # 模型选项配置
+    AVAILABLE_MODELS: list = Field(
+        default=["deepseek-v4-pro", "deepseek-v4-flash"],
+        description="可用的模型列表"
+    )
+    DEFAULT_MODEL: str = Field(
+        default="deepseek-v4-pro",
+        description="默认模型"
+    )
+    
     # 用户配置
     USER_ID: str = Field(default="default_user", description="用户ID")
     

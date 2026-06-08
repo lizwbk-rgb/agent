@@ -9,7 +9,7 @@ import os
 import re
 import logging
 import uuid
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
@@ -93,8 +93,9 @@ class Agent:
         self.workspace_path = workspace_path
         self.max_history_messages = max_history_messages
         
-        # 初始化组件
-        self.deepseek_client = DeepSeekClient()
+        # 使用默认模型初始化DeepSeek客户端
+        default_model = getattr(self.config, 'DEFAULT_MODEL', 'deepseek-v4-pro')
+        self.deepseek_client = DeepSeekClient(model=default_model)
         self.memory_manager = MemoryManager(user_id=self.user_id)
         self.file_processor = FileProcessor()
         
@@ -509,6 +510,203 @@ class Agent:
                 usage=UsageInfo()
             )
     
+    def chat_stream(
+        self,
+        user_message: str,
+        file_path: str = None,
+        enable_thinking: bool = False,
+        model: str = "deepseek-v4-pro",
+        content_callback: Callable[[str], None] = None,
+        thinking_callback: Callable[[str], None] = None
+    ) -> ChatResult:
+        """
+        流式对话处理
+        
+        Args:
+            user_message: 用户消息
+            file_path: 附件文件路径（可选）
+            enable_thinking: 是否启用深度思考模式
+            model: 使用的模型名称
+            content_callback: 内容更新回调函数
+            thinking_callback: 思考内容更新回调函数
+            
+        Returns:
+            ChatResult: 对话结果
+        """
+        logger.info(f"流式处理消息: {truncate_text(user_message, 50)}... Model: {model}, Thinking: {enable_thinking}")
+        
+        # 1. 检查是否是记忆指令
+        command_result = self._handle_memory_command(user_message)
+        
+        if command_result:
+            # 是记忆指令，直接返回结果
+            return ChatResult(
+                response=command_result["message"],
+                usage=UsageInfo(),
+                memories_added=[command_result["memory_id"]] if command_result["command"] == "add" and command_result["memory_id"] else [],
+                memories_deleted=[command_result["memory_id"]] if command_result["command"] == "delete" and command_result["memory_id"] else [],
+                memories_updated=[command_result["memory_id"]] if command_result["command"] == "update" and command_result["memory_id"] else []
+            )
+        
+        # 2. 处理文件上传
+        file_content = None
+        if file_path:
+            file_content = self._handle_file_upload(file_path)
+            # 将文件内容添加到用户消息
+            user_message = f"{user_message}\n\n{file_content}"
+        
+        # 3. 添加用户消息到历史
+        user_msg = ConversationMessage(
+            role="user",
+            content=user_message,
+            file_path=file_path,
+            file_content=file_content
+        )
+        self.conversation_history.append(user_msg)
+        
+        # 保存用户消息到数据库（第一次发送消息时创建会话记录）
+        if self.current_conversation_id:
+            # 如果会话尚未持久化，先创建数据库记录
+            if not getattr(self, '_conversation_persisted', False):
+                self.conversation_db.create_conversation_record(self.current_conversation_id)
+                self._conversation_persisted = True
+                logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+            
+            self.conversation_db.save_message(
+                self.current_conversation_id,
+                "user",
+                user_message,
+                user_msg.timestamp,
+                file_path
+            )
+            
+            # 如果是第一条用户消息，生成会话标题（取前30字）
+            user_messages = [m for m in self.conversation_history if m.role == "user"]
+            if len(user_messages) == 1:
+                title = user_message[:30] + ("..." if len(user_message) > 30 else "")
+                self.conversation_db.update_conversation_title(self.current_conversation_id, title)
+                logger.info(f"自动生成会话标题: {title}")
+        
+        # 4. 搜索相关记忆
+        memory_context = self._search_related_memories(user_message)
+        
+        # 5. 构建消息列表
+        context_messages = self._build_context_messages(memory_context)
+        
+        # 6. 添加历史消息（限制数量）
+        history_messages = self._get_history_messages()
+        context_messages.extend(history_messages)
+        
+        # 7. 流式调用DeepSeek API
+        try:
+            # 创建临时客户端（使用指定模型）
+            from deepseek_client import DeepSeekClient
+            temp_client = DeepSeekClient(model=model)
+            
+            content_parts = []
+            thinking_parts = []
+            total_usage = UsageInfo()
+            
+            # 构建extra_body参数
+            extra_body = {}
+            if enable_thinking:
+                extra_body["thinking"] = {"type": "enabled"}
+            
+            # 流式请求参数
+            request_params = {
+                "model": model,
+                "messages": context_messages,
+                "max_tokens": 4096,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "extra_body": extra_body if extra_body else None
+            }
+            
+            # 执行流式请求
+            for chunk in temp_client.client.chat.completions.create(**request_params):
+                # 处理内容块
+                if chunk.choices and chunk.choices[0].delta:
+                    delta = chunk.choices[0].delta
+                    
+                    # 处理思考内容（如果有）- 通过reasoning_content字段
+                    if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                        thinking_parts.append(delta.reasoning_content)
+                        thinking_content = "".join(thinking_parts)
+                        if thinking_callback:
+                            thinking_callback(thinking_content)
+                    
+                    # 处理正文内容
+                    if delta.content:
+                        content_parts.append(delta.content)
+                        content = "".join(content_parts)
+                        if content_callback:
+                            content_callback(content)
+                
+                # 更新使用信息
+                if chunk.usage:
+                    total_usage = UsageInfo(
+                        prompt_tokens=chunk.usage.prompt_tokens,
+                        completion_tokens=chunk.usage.completion_tokens,
+                        total_tokens=chunk.usage.total_tokens
+                    )
+            
+            final_content = "".join(content_parts)
+            final_thinking = "".join(thinking_parts)
+            
+            # 8. 添加AI回复到历史
+            assistant_msg = ConversationMessage(
+                role="assistant",
+                content=final_content
+            )
+            self.conversation_history.append(assistant_msg)
+            
+            # 保存思考内容到数据库（在AI回复之前保存，保证顺序正确）
+            if self.current_conversation_id and final_thinking:
+                # 如果会话尚未持久化，先创建数据库记录
+                if not getattr(self, '_conversation_persisted', False):
+                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._conversation_persisted = True
+                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                
+                self.conversation_db.save_message(
+                    self.current_conversation_id,
+                    "thinking",
+                    final_thinking,
+                    assistant_msg.timestamp  # 使用AI消息的时间戳，保证思考内容排在AI回复之前
+                )
+                logger.info(f"保存思考内容到数据库: {len(final_thinking)} 字符")
+            
+            # 保存AI回复到数据库
+            if self.current_conversation_id:
+                # 如果会话尚未持久化，先创建数据库记录（思考内容保存时可能已创建）
+                if not getattr(self, '_conversation_persisted', False):
+                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._conversation_persisted = True
+                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                
+                self.conversation_db.save_message(
+                    self.current_conversation_id,
+                    "assistant",
+                    final_content,
+                    assistant_msg.timestamp
+                )
+            
+            # 9. 尝试从对话中提取记忆
+            self._extract_memories_from_conversation(user_msg, assistant_msg)
+            
+            return ChatResult(
+                response=final_content,
+                usage=total_usage
+            )
+            
+        except Exception as e:
+            logger.error(f"流式对话处理失败: {str(e)}", exc_info=True)
+            
+            return ChatResult(
+                response=f"抱歉，处理您的请求时发生了错误: {str(e)}",
+                usage=UsageInfo()
+            )
+    
     def _get_history_messages(self) -> List[Dict[str, str]]:
         """
         获取历史消息（限制数量）
@@ -735,32 +933,30 @@ AI: {truncate_text(assistant_msg.content, 500)}
         Returns:
             List[Dict]: 记忆列表
         """
-        logger.info(f"[DEBUG] agent.get_memories() 开始")
+        logger.info(f"agent.get_memories() 开始")
         try:
             memories = self.memory_manager.get_all()
-            logger.info(f"[DEBUG] memory_manager.get_all() 返回: type={type(memories)}, len={len(memories) if memories else 'None'}")
+            logger.info(f"memory_manager.get_all() 返回: type={type(memories)}, len={len(memories) if memories else 'None'}")
             
             result = []
             for i, mem in enumerate(memories):
-                logger.info(f"[DEBUG] 处理第{i}个记忆: type={type(mem)}, has_to_dict={hasattr(mem, 'to_dict')}")
+                logger.info(f"处理第{i}个记忆: type={type(mem)}, has_to_dict={hasattr(mem, 'to_dict')}")
                 if hasattr(mem, 'to_dict'):
                     try:
                         d = mem.to_dict()
                         result.append(d)
-                        logger.info(f"[DEBUG] 第{i}个记忆转为dict: id={d.get('id', 'N/A')}")
+                        logger.info(f"第{i}个记忆转为dict: id={d.get('id', 'N/A')}")
                     except Exception as e2:
-                        logger.error(f"[DEBUG] 第{i}个记忆to_dict失败: {e2}")
+                        logger.error(f"第{i}个记忆to_dict失败: {e2}")
                 elif isinstance(mem, dict):
                     result.append(mem)
-                    logger.info(f"[DEBUG] 第{i}个记忆是dict: keys={list(mem.keys())[:5]}")
+                    logger.info(f"第{i}个记忆是dict: keys={list(mem.keys())[:5]}")
                 else:
-                    logger.warning(f"[DEBUG] 跳过非Memory对象: type={type(mem)}, value={str(mem)[:100]}")
-            logger.info(f"[DEBUG] agent.get_memories() 完成: 返回{len(result)}条")
+                    logger.warning(f"跳过非Memory对象: type={type(mem)}, value={str(mem)[:100]}")
+            logger.info(f"agent.get_memories() 完成: 返回{len(result)}条")
             return result
         except Exception as e:
-            logger.error(f"[DEBUG] 获取记忆失败: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"获取记忆失败: {e}", exc_info=True)
             return []
     
     def delete_memory(self, memory_id: str) -> bool:

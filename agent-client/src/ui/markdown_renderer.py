@@ -77,6 +77,9 @@ class MarkdownRenderer:
     将Markdown文本转换为HTML，支持代码高亮、表格、图片等
     """
     
+    # 单例实例
+    _instance = None
+    
     def __init__(self, options: RenderOptions = None):
         """
         初始化渲染器
@@ -86,6 +89,13 @@ class MarkdownRenderer:
         """
         self.options = options or RenderOptions()
         self._lexer = None
+    
+    @classmethod
+    def get_instance(cls):
+        """获取单例实例"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
     
     def render(self, markdown_text: str) -> str:
         """
@@ -97,30 +107,23 @@ class MarkdownRenderer:
         Returns:
             str: HTML文本
         """
-        logger.info(f"[MarkdownRenderer.render] 开始，输入长度={len(markdown_text)}")
-        logger.info(f"[MarkdownRenderer.render] 输入前200字: {markdown_text[:200]}")
-        
         if not markdown_text:
             return ""
         
         # 预处理
         text = self._preprocess(markdown_text)
-        logger.info(f"[MarkdownRenderer.render] 预处理后长度={len(text)}")
         
         # 解析并渲染 - 使用更简单的方法：按行处理
         lines = text.split('\n')
-        logger.info(f"[MarkdownRenderer.render] 总行数={len(lines)}")
         
         html_parts = []
         i = 0
         
         while i < len(lines):
             line = lines[i]
-            logger.info(f"[MarkdownRenderer.render] i={i}, line={line[:50]}")
             
             # 检测代码块开始
             if line.strip().startswith('```'):
-                logger.info(f"[MarkdownRenderer.render] 检测到代码块开始")
                 # 提取代码块
                 code_lines = []
                 lang = line.strip()[3:].strip()
@@ -133,14 +136,10 @@ class MarkdownRenderer:
                 # 渲染代码块
                 code_html = self._render_code('\n'.join(code_lines), lang)
                 html_parts.append(code_html)
-                logger.info(f"[MarkdownRenderer.render] 代码块已渲染，html_parts长度={len(html_parts)}")
                 continue
             
             # 检测块级LaTeX公式开始（$$）
-            is_latex_start = line.strip().startswith('$$')
-            if is_latex_start:
-                logger.info(f"[MarkdownRenderer.render] 检测到块级LaTeX公式开始，i={i}")
-                
+            if line.strip().startswith('$$'):
                 # 提取LaTeX公式
                 latex_lines = []
                 # 移除开头的 $$
@@ -165,14 +164,10 @@ class MarkdownRenderer:
                 # 块级LaTeX公式用段落包裹
                 latex_html = f'<p style="text-align: center; margin: 1em 0;">{latex_html}</p>'
                 html_parts.append(latex_html)
-                logger.info(f"[MarkdownRenderer.render] 块级LaTeX公式已渲染，html_parts长度={len(html_parts)}")
                 continue
-            elif i < 5:  # 只在前5行打印详细日志，避免日志过多
-                logger.info(f"[MarkdownRenderer.render] i={i}, 检查块级LaTeX：line='{line[:30]}'， strip='{line.strip()[:30]}'， startswith$$= {is_latex_start}")
             
             # 检测表格（包含 | 的行）
             if '|' in line and i + 1 < len(lines) and '|' in lines[i+1]:
-                logger.info(f"[MarkdownRenderer.render] 检测到表格开始")
                 # 提取表格行
                 table_lines = []
                 while i < len(lines) and lines[i].strip() and '|' in lines[i]:
@@ -183,9 +178,6 @@ class MarkdownRenderer:
                 table_html = self._render_table('\n'.join(table_lines))
                 if table_html:
                     html_parts.append(table_html)
-                    logger.info(f"[MarkdownRenderer.render] 表格已渲染，html_parts长度={len(html_parts)}")
-                else:
-                    logger.warning(f"[MarkdownRenderer.render] 表格渲染失败")
                 continue
             
             # 普通行 - 收集段落或列表
@@ -196,18 +188,15 @@ class MarkdownRenderer:
                     # 可能是表格，检查下一行是否也是表格
                     if i + 1 < len(lines) and '|' in lines[i+1]:
                         # 是表格开始，停止收集段落
-                        logger.info(f"[MarkdownRenderer.render] 段落收集中遇到表格开始，i={i}")
                         break
                 # 检查当前行是否是块级LaTeX公式的开始（$$）
                 if lines[i].strip().startswith('$$'):
-                    logger.info(f"[MarkdownRenderer.render] 段落收集中遇到块级LaTeX开始，i={i}")
                     break
                 para_lines.append(lines[i])
                 i += 1
             
             if para_lines:
                 paragraph = '\n'.join(para_lines)
-                logger.info(f"[MarkdownRenderer.render] 处理段落: {paragraph[:50]}")
                 
                 # 检查是否包含列表项
                 lines_in_para = paragraph.split('\n')
@@ -215,29 +204,21 @@ class MarkdownRenderer:
                 
                 if is_list:
                     # 处理列表
-                    logger.info(f"[MarkdownRenderer.render] 检测到列表，行数={len(lines_in_para)}")
                     list_html = self._process_list(lines_in_para)
                     if list_html:
                         html_parts.append(list_html)
-                        logger.info(f"[MarkdownRenderer.render] 列表已处理")
                 else:
                     # 处理普通段落
                     html_content = self._process_paragraph(paragraph)
                     if html_content:
                         html_parts.append(html_content)
-                        logger.info(f"[MarkdownRenderer.render] 段落已处理，html_parts长度={len(html_parts)}")
-                    else:
-                        logger.warning(f"[MarkdownRenderer.render] 段落处理返回空")
             
             # 跳过空行
             while i < len(lines) and not lines[i].strip():
                 i += 1
         
-        logger.info(f"[MarkdownRenderer.render] 循环结束，html_parts长度={len(html_parts)}")
-        
         # 组装HTML
         result = self._postprocess(html_parts)
-        logger.info(f"[MarkdownRenderer.render] 完成，输出长度={len(result)}")
         return result
     
     def _preprocess(self, text: str) -> str:
@@ -287,8 +268,6 @@ class MarkdownRenderer:
     
     def _process_list(self, lines: list) -> str:
         """处理列表"""
-        logger.info(f"[_process_list] 开始，行数={len(lines)}")
-        
         # 判断是有序列表还是无序列表
         is_ordered = re.match(r'^\d+\.\s+', lines[0].strip())
         tag = 'ol' if is_ordered else 'ul'
@@ -305,7 +284,6 @@ class MarkdownRenderer:
                 checked = 'checked' if task_match.group(1).lower() == 'x' else ''
                 content = task_match.group(2)
                 html_parts.append(f'<li style="margin: 0.2em 0;"><input type="checkbox" {checked} disabled style="margin-right: 4px;">{self._inline_format(content)}</li>')
-                logger.info(f"[_process_list] 任务列表项: checked={checked}, content={content[:30]}")
             else:
                 # 普通列表项 - 移除列表标记
                 if is_ordered:
@@ -319,28 +297,19 @@ class MarkdownRenderer:
                         content = match.group(1)
                         html_parts.append(f'<li style="margin: 0.2em 0;">{self._inline_format(content)}</li>')
         
-        logger.info(f"[_process_list] 列表项数={len(lines)}")
         html_parts.append(f'</{tag}>')
-        
-        result = '\n'.join(html_parts)
-        logger.info(f"[_process_list] 完成，HTML长度={len(result)}")
-        return result
+        return '\n'.join(html_parts)
     
     def _process_paragraph(self, paragraph: str) -> str:
         """处理单个段落"""
-        logger.info(f"[_process_paragraph] 开始，paragraph={paragraph[:50]}")
         # 检测标题
         if paragraph.startswith('# '):
-            logger.info(f"[_process_paragraph] 检测到H1")
             return f'<h1 style="font-size: 1.5em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[2:])}</h1>'
         elif paragraph.startswith('## '):
-            logger.info(f"[_process_paragraph] 检测到H2")
             return f'<h2 style="font-size: 1.3em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[3:])}</h2>'
         elif paragraph.startswith('### '):
-            logger.info(f"[_process_paragraph] 检测到H3")
             return f'<h3 style="font-size: 1.1em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[4:])}</h3>'
         elif paragraph.startswith('#### '):
-            logger.info(f"[_process_paragraph] 检测到H4")
             return f'<h4 style="font-size: 1em; margin: 0.5em 0; font-weight: bold; color: #333;">{self._inline_format(paragraph[5:])}</h4>'
         
         # 检测引用
@@ -360,95 +329,103 @@ class MarkdownRenderer:
         
         # 检测表格
         if self.options.render_tables and '|' in paragraph:
-            logger.info(f"[_process_paragraph] 检测到表格，调用_render_table")
             table_html = self._render_table(paragraph)
             if table_html:
-                logger.info(f"[_process_paragraph] 表格渲染成功")
                 return table_html
-            else:
-                logger.warning(f"[_process_paragraph] 表格渲染失败")
         
         # 检测水平线
         if re.match(r'^[-=*_]{3,}$', paragraph):
-            logger.info(f"[_process_paragraph] 检测到水平线")
             return '<hr style="border: none; border-top: 1px solid #ddd; margin: 1em 0;">'
         
         # 检测任务列表
         task_match = re.match(r'^[-*+]\s+\[[ x]\]\s+(.+)$', paragraph, re.IGNORECASE)
         if task_match:
             checked = 'checked' if '[x]' in paragraph.lower() else ''
-            logger.info(f"[_process_paragraph] 检测到任务列表")
             return f'<ul style="margin: 0.5em 0; padding-left: 2em;"><li style="margin: 0.2em 0;"><input type="checkbox" {checked} disabled style="margin-right: 4px;">{task_match.group(1)}</li></ul>'
         
         # 普通段落
-        logger.info(f"[_process_paragraph] 普通段落，调用_inline_format")
         return f'<p style="margin: 0.5em 0; line-height: 1.6; color: #333;">{self._inline_format(paragraph)}</p>'
     
     def _inline_format(self, text: str) -> str:
         """处理行内格式"""
         # 简化策略：只支持 *text* 斜体，不支持 _text_ 斜体（避免与LaTeX公式冲突）
         
-        # 首先处理行内LaTeX公式 $...$（必须在其他处理之前）
-        # 策略：使用 finditer 找到所有 $...$ 匹配，排除 $$ 块级LaTeX
+        # 首先处理行内LaTeX公式 $...$ 和 \(...\)（必须在其他处理之前）
         def process_inline_latex(text):
             result = []
             last_end = 0
             i = 0
             
             while i < len(text):
-                # 找到第一个 $
-                start = text.find('$', i)
-                if start == -1:
-                    # 没找到 $，添加剩余文本并结束
+                # 找到第一个 $ 或 \
+                dollar_pos = text.find('$', i)
+                backslash_pos = text.find('\\(', i)
+                backslash_end_pos = text.find('\\)', i)
+                
+                # 优先找最近的起始位置
+                if dollar_pos == -1 and backslash_pos == -1:
+                    # 没找到任何LaTeX起始符，添加剩余文本并结束
                     if last_end < len(text):
                         result.append(text[last_end:])
                     break
                 
-                # 检查是否是 $$（块级LaTeX）
-                if start + 1 < len(text) and text[start + 1] == '$':
-                    # 这是块级LaTeX，跳过 $$ 但保留文本（块级LaTeX应该已经被单独处理）
-                    # 只跳过 $$，不添加任何内容
-                    i = start + 2
-                    continue
-                
-                # 这是行内LaTeX $...$
-                # 找到对应的结束 $
-                # 跳过在另一个 $$ 内的 $
-                end = start + 1
-                while end < len(text):
-                    if text[end] == '$':
-                        # 检查是否是 $$（不应该在这里出现，但要安全处理）
-                        if end + 1 < len(text) and text[end + 1] == '$':
-                            # 跳过 $$，继续查找
-                            end += 2
-                            continue
-                        # 找到结束 $
+                # 选择最近的起始位置
+                if dollar_pos != -1 and (backslash_pos == -1 or dollar_pos < backslash_pos):
+                    # 处理 $...$ 格式
+                    start = dollar_pos
+                    
+                    # 检查是否是 $$（块级LaTeX）
+                    if start + 1 < len(text) and text[start + 1] == '$':
+                        # 这是块级LaTeX，跳过 $$
+                        i = start + 2
+                        continue
+                    
+                    # 这是行内LaTeX $...$
+                    end = start + 1
+                    while end < len(text):
+                        if text[end] == '$':
+                            if end + 1 < len(text) and text[end + 1] == '$':
+                                end += 2
+                                continue
+                            break
+                        end += 1
+                    
+                    if end >= len(text):
+                        if last_end < len(text):
+                            result.append(text[last_end:])
                         break
-                    end += 1
+                    
+                    latex_content = text[start + 1:end]
+                    latex_html = self._render_latex(latex_content, display_mode=False)
+                    
+                    if last_end < start:
+                        result.append(text[last_end:start])
+                    result.append(latex_html)
+                    i = end + 1
+                    
+                else:
+                    # 处理 \(...\) 格式
+                    start = backslash_pos
+                    
+                    # 找到对应的 \)
+                    if backslash_end_pos == -1 or backslash_end_pos < start:
+                        # 没找到结束符，添加剩余文本并结束
+                        if last_end < len(text):
+                            result.append(text[last_end:])
+                        break
+                    
+                    end = backslash_end_pos
+                    
+                    # 提取LaTeX内容（去掉 \( 和 \)）
+                    latex_content = text[start + 2:end]
+                    latex_html = self._render_latex(latex_content, display_mode=False)
+                    
+                    if last_end < start:
+                        result.append(text[last_end:start])
+                    result.append(latex_html)
+                    i = end + 2
                 
-                if end >= len(text):
-                    # 没找到结束 $，添加剩余文本并结束
-                    if last_end < len(text):
-                        result.append(text[last_end:])
-                    break
-                
-                # 提取LaTeX内容
-                latex_content = text[start + 1:end]
-                
-                # 渲染行内LaTeX为图片
-                latex_html = self._render_latex(latex_content, display_mode=False)
-                
-                # 添加 LaTeX 之前的内容
-                if last_end < start:
-                    result.append(text[last_end:start])
-                
-                # 添加LaTeX图片
-                result.append(latex_html)
-                
-                last_end = end + 1
-                i = end + 1
-            
-            # 不需要再添加剩余文本，因为上面已经处理了
+                last_end = i
             
             return ''.join(result)
         
@@ -492,7 +469,6 @@ class MarkdownRenderer:
         # 链接 [text](url)
         text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\\2" style="color: #0066cc; text-decoration: underline;">\\1</a>', text)
         
-        logger.info(f"[_inline_format] 处理完成: {text[:100]}")
         return text
     
     def _render_code(self, code: str, language: str = '') -> str:
@@ -655,17 +631,13 @@ class MarkdownRenderer:
         Returns:
             str: HTML表格
         """
-        logger.info(f"[_render_table] 开始，text={text[:100]}")
         try:
             lines = text.strip().split('\n')
-            logger.info(f"[_render_table] 行数={len(lines)}")
             
             # 过滤分隔行
             data_lines = [line for line in lines if not re.match(r'^[\s|:-]+$', line)]
-            logger.info(f"[_render_table] 过滤后行数={len(data_lines)}")
             
             if not data_lines:
-                logger.warning(f"[_render_table] 无数据行，返回None")
                 return None
             
             # 解析表格数据
@@ -710,13 +682,9 @@ class MarkdownRenderer:
                 
                 if cells:
                     rows.append(cells)
-                    logger.info(f"[_render_table] 解析行: {cells}")
             
             if not rows:
-                logger.warning(f"[_render_table] 无有效行，返回None")
                 return None
-            
-            logger.info(f"[_render_table] 解析完成，行数={len(rows)}")
             
             # 构建HTML表格 - 使用内联样式
             html_parts = ['<div style="overflow-x: auto; margin: 1em 0;"><table style="border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em;">']
@@ -739,12 +707,9 @@ class MarkdownRenderer:
                     html_parts.append('</tbody>')
             
             html_parts.append('</table></div>')
-            result = '\n'.join(html_parts)
-            logger.info(f"[_render_table] 完成，HTML长度={len(result)}")
-            return result
+            return '\n'.join(html_parts)
             
         except Exception as e:
-            logger.error(f"[_render_table] 异常: {e}")
             # 表格解析失败，返回原始文本
             return f'<p>{self._inline_format(text)}</p>'
     
