@@ -102,6 +102,7 @@ class MainWindow(QMainWindow):
         self.history_widget.conversation_selected.connect(self.on_history_conversation_selected)
         self.history_widget.new_conversation_requested.connect(self.on_new_conversation)
         self.history_widget.back_requested.connect(self.switch_to_chat_page)
+        self.history_widget.conversation_deleted.connect(self.on_conversation_deleted)
         self.stacked_widget.addWidget(self.history_widget)
         
         # 页面2: 记忆管理页面
@@ -642,6 +643,24 @@ class MainWindow(QMainWindow):
             self.chat_widget.clear_chat_display()
         
         self.statusBar().showMessage("已创建新对话")
+    
+    def on_conversation_deleted(self, conversation_id: str):
+        """
+        处理会话删除事件
+        
+        Args:
+            conversation_id: 被删除的会话ID
+        """
+        logger.info(f"会话已删除: {conversation_id}")
+        
+        # 如果删除的是当前正在查看的会话，切换到聊天页面并清空显示
+        if self.agent.current_conversation_id == conversation_id:
+            self.switch_to_chat_page()
+            if hasattr(self, 'chat_widget'):
+                self.chat_widget.clear_chat_display()
+            self.statusBar().showMessage("当前会话已删除，已创建新对话")
+        else:
+            self.statusBar().showMessage(f"已删除会话: {conversation_id[:8]}")
 
 
 # 便捷函数

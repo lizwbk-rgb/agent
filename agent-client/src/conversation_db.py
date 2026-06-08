@@ -109,6 +109,29 @@ class ConversationDB:
         
         return conversation_id
     
+    def create_conversation_record(self, conversation_id: str, title: str = "新对话"):
+        """
+        创建会话记录（用于延迟创建场景）
+        
+        Args:
+            conversation_id: 会话ID
+            title: 会话标题
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO conversations (id, title, created_at, updated_at, message_count)
+            VALUES (?, ?, ?, ?, ?)
+        """, (conversation_id, title, now, now, 0))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"创建会话记录: {conversation_id}")
+    
     def save_message(self, conversation_id: str, role: str, content: str, 
                     timestamp: datetime = None, file_path: str = None):
         """

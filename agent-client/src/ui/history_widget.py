@@ -34,6 +34,7 @@ class HistoryItemWidget(QFrame):
     
     clicked = pyqtSignal(str)  # 会话ID信号
     title_edited = pyqtSignal(str, str)  # 会话ID, 新标题信号
+    delete_requested = pyqtSignal(str)  # 会话ID信号 - 删除请求
     
     def __init__(self, conversation: Dict[str, Any], parent=None):
         """
@@ -45,6 +46,7 @@ class HistoryItemWidget(QFrame):
         """
         super().__init__(parent)
         self.conversation = conversation
+        self._parent_widget = parent  # 保存父组件引用用于右键菜单
         self.setup_ui()
     
     def setup_ui(self):
@@ -85,6 +87,28 @@ class HistoryItemWidget(QFrame):
             }
         """)
         title_layout.addWidget(edit_title_btn)
+        
+        # 删除按钮
+        delete_btn = QPushButton("×")
+        delete_btn.setToolTip("删除会话")
+        delete_btn.clicked.connect(lambda: self.on_delete_conversation())
+        delete_btn.setFixedSize(28, 28)
+        delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: 1px solid #ddd;
+                border-radius: 14px;
+                font-size: 16px;
+                font-weight: bold;
+                color: #999;
+            }
+            QPushButton:hover {
+                background-color: #ffebee;
+                border-color: #f44336;
+                color: #f44336;
+            }
+        """)
+        title_layout.addWidget(delete_btn)
         
         # 消息数量
         msg_count = self.conversation.get("message_count", 0)
@@ -153,7 +177,37 @@ class HistoryItemWidget(QFrame):
     def mousePressEvent(self, event):
         """鼠标点击事件"""
         super().mousePressEvent(event)
-        self.clicked.emit(self.conversation["id"])
+        
+        # 右键点击显示菜单
+        if event.button() == Qt.MouseButton.RightButton:
+            self.show_context_menu(event.globalPos())
+        else:
+            self.clicked.emit(self.conversation["id"])
+    
+    def show_context_menu(self, pos):
+        """显示右键菜单"""
+        from PyQt6.QtWidgets import QMenu, QAction
+        
+        menu = QMenu(self)
+        
+        # 加载会话
+        load_action = QAction("加载会话", self)
+        load_action.triggered.connect(lambda: self.clicked.emit(self.conversation["id"]))
+        menu.addAction(load_action)
+        
+        # 编辑标题
+        edit_action = QAction("编辑标题", self)
+        edit_action.triggered.connect(self.on_edit_title)
+        menu.addAction(edit_action)
+        
+        menu.addSeparator()
+        
+        # 删除会话
+        delete_action = QAction("删除会话", self)
+        delete_action.triggered.connect(self.on_delete_conversation)
+        menu.addAction(delete_action)
+        
+        menu.exec(pos)
     
     def mouseDoubleClickEvent(self, event):
         """鼠标双击事件 - 编辑标题"""
@@ -176,6 +230,26 @@ class HistoryItemWidget(QFrame):
         """更新标题显示"""
         self.title_label.setText(new_title)
         self.conversation["title"] = new_title
+    
+    def on_delete_conversation(self):
+        """删除会话"""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        conv_id = self.conversation["id"]
+        title = self.conversation.get("title", "新对话")
+        
+        # 确认删除
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除会话「{title}」吗？此操作不可撤销！",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            logger.info(f"请求删除会话: {conv_id}")
+            self.delete_requested.emit(conv_id)
 
 
 class HistoryWidget(QWidget):
@@ -189,6 +263,7 @@ class HistoryWidget(QWidget):
     conversation_selected = pyqtSignal(str)  # 会话ID信号
     new_conversation_requested = pyqtSignal()   # 新建对话请求信号
     back_requested = pyqtSignal()              # 返回请求信号
+    conversation_deleted = pyqtSignal(str)      # 会话删除信号
     
     def __init__(
         self,
@@ -392,6 +467,7 @@ class HistoryWidget(QWidget):
             item_widget = HistoryItemWidget(conv)
             item_widget.clicked.connect(self.on_history_item_clicked)
             item_widget.title_edited.connect(self.on_title_edited)
+            item_widget.delete_requested.connect(self.on_delete_conversation)
             
             # 设置sizeHint确保widget可见
             item.setSizeHint(QSize(item_widget.sizeHint().width(), 70))
@@ -429,6 +505,18 @@ class HistoryWidget(QWidget):
             self.load_conversations()
         else:
             logger.warning("Agent未设置，无法更新会话标题")
+    
+    def on_delete_conversation(self, conversation_id: str):
+        """删除会话事件"""
+        logger.info(f"删除会话: {conversation_id}")
+        if self.agent:
+            self.agent.delete_conversation(conversation_id)
+            # 刷新列表
+            self.load_conversations()
+            # 发出删除信号
+            self.conversation_deleted.emit(conversation_id)
+        else:
+            logger.warning("Agent未设置，无法删除会话")
     
     def on_new_conversation(self):
         """新建对话按钮点击事件"""

@@ -431,8 +431,14 @@ class Agent:
         )
         self.conversation_history.append(user_msg)
         
-        # 保存用户消息到数据库
+        # 保存用户消息到数据库（第一次发送消息时创建会话记录）
         if self.current_conversation_id:
+            # 如果会话尚未持久化，先创建数据库记录
+            if not getattr(self, '_conversation_persisted', False):
+                self.conversation_db.create_conversation_record(self.current_conversation_id)
+                self._conversation_persisted = True
+                logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+            
             self.conversation_db.save_message(
                 self.current_conversation_id,
                 "user",
@@ -475,6 +481,12 @@ class Agent:
             
             # 保存AI回复到数据库
             if self.current_conversation_id:
+                # 如果会话尚未持久化，先创建数据库记录
+                if not getattr(self, '_conversation_persisted', False):
+                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._conversation_persisted = True
+                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                
                 self.conversation_db.save_message(
                     self.current_conversation_id,
                     "assistant",
@@ -571,16 +583,19 @@ AI: {truncate_text(assistant_msg.content, 500)}
         创建新会话
         
         Returns:
-            str: 新会话ID
+            str: 新会话ID（临时ID，实际数据库记录在有消息时创建）
         """
-        # 创建新会话记录
-        conversation_id = self.conversation_db.create_conversation()
+        # 生成临时会话ID（不立即创建数据库记录）
+        conversation_id = str(uuid.uuid4())
         self.current_conversation_id = conversation_id
         
         # 清空当前对话历史
         self.conversation_history.clear()
         
-        logger.info(f"创建新会话: {conversation_id}")
+        # 标记会话是否已持久化到数据库
+        self._conversation_persisted = False
+        
+        logger.info(f"创建新会话（临时）: {conversation_id}")
         return conversation_id
     
     def load_conversation(self, conversation_id: str):
@@ -598,6 +613,9 @@ AI: {truncate_text(assistant_msg.content, 500)}
         
         # 更新当前会话ID
         self.current_conversation_id = conversation_id
+        
+        # 标记会话已持久化（加载的历史会话必然存在于数据库）
+        self._conversation_persisted = True
         
         # 清空当前对话历史
         self.conversation_history.clear()
@@ -633,6 +651,30 @@ AI: {truncate_text(assistant_msg.content, 500)}
         """
         self.conversation_db.update_conversation_title(conversation_id, title)
         logger.info(f"更新会话标题: {conversation_id} -> {title}")
+    
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """
+        删除会话
+        
+        Args:
+            conversation_id: 会话ID
+            
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            self.conversation_db.delete_conversation(conversation_id)
+            logger.info(f"删除会话成功: {conversation_id}")
+            
+            # 如果删除的是当前会话，创建新会话
+            if self.current_conversation_id == conversation_id:
+                self.create_new_conversation()
+                logger.info("已创建新会话替代被删除的会话")
+            
+            return True
+        except Exception as e:
+            logger.error(f"删除会话失败: {str(e)}")
+            return False
     
     def clear_conversation(self):
         """清空对话历史（创建新会话）"""
