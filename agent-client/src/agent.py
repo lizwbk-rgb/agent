@@ -187,9 +187,9 @@ class Agent:
         
         # 记住指令: "记住 xxx" 或 "remember xxx"
         remember_patterns = [
-            r'^记住\s+(.+)$',
-            r'^remember\s+(.+)$',
-            r'^请记住\s+(.+)$',
+            r'^记住\s*[,，:：]?\s*(.+)$',  # 匹配 "记住内容"、"记住，内容"、"记住：内容"
+            r'^remember\s*[,，:：]?\s*(.+)$',
+            r'^请记住\s*[,，:：]?\s*(.+)$',
         ]
         
         for pattern in remember_patterns:
@@ -245,8 +245,8 @@ class Agent:
         
         try:
             if command == "add":
-                # 添加记忆
-                memory_id = self.memory_manager.add(content)
+                # 添加记忆（用户自定义来源）
+                memory_id = self.memory_manager.add(content, metadata={"source": "user_defined"})
                 result["success"] = True
                 result["memory_id"] = memory_id
                 result["message"] = f"已记住: {content}"

@@ -132,7 +132,8 @@ class Config(BaseModel):
                 "config": {
                     "host": config.QDRANT_HOST,
                     "port": config.QDRANT_PORT,
-                    "collection_name": config.MEM0_COLLECTION_NAME
+                    "collection_name": config.MEM0_COLLECTION_NAME,
+                    "embedding_model_dims": 384  # 显式指定维度，避免实体集合使用错误的1536维
                 }
             },
             "history_db": {
@@ -140,6 +141,11 @@ class Config(BaseModel):
                 "config": {
                     "db_path": "data/history.db"
                 }
+            },
+            "custom_instructions": "重要：所有记忆必须使用中文记录，不要翻译成英文。保持用户输入的原始语言。",
+            # 启用实体增强功能，并配置使用相同的384维嵌入器
+            "entity_extraction": {
+                "enabled": True
             }
         }
     

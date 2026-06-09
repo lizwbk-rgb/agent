@@ -395,28 +395,43 @@ class MemoryManager:
             
             client = QdrantClient(host=host, port=port, timeout=5)
             
-            # 检查集合是否存在
-            try:
-                collection_info = client.get_collection(collection_name)
-                current_dims = collection_info.config.params.vectors.size
-                
-                if current_dims != expected_dims:
-                    logger.warning(f"集合 {collection_name} 维度不匹配: 期望{expected_dims}, 实际{current_dims}, 删除并手动重建")
-                    client.delete_collection(collection_name)
-                    # 手动创建正确维度的集合
-                    self._create_collection_with_correct_dims(client, collection_name, expected_dims)
-                else:
-                    logger.info(f"集合 {collection_name} 维度正确: {current_dims}")
-            except Exception:
-                # 集合不存在，手动创建
-                logger.info(f"集合 {collection_name} 不存在，手动创建（维度: {expected_dims}）")
-                self._create_collection_with_correct_dims(client, collection_name, expected_dims)
-                
+            # 1. 确保主集合存在且维度正确
+            self._check_and_fix_collection(client, collection_name, expected_dims)
+            
+            # 2. 获取所有集合，检查其他相关集合（以collection_name为前缀的集合）
+            # mem0可能会创建多个集合，如 agent_memories_v4_entities 等
+            all_collections = client.get_collections().collections
+            related_collections = [c.name for c in all_collections 
+                                   if c.name.startswith(collection_name) and c.name != collection_name]
+            
+            if related_collections:
+                logger.info(f"发现其他相关集合: {related_collections}")
+                for coll_name in related_collections:
+                    self._check_and_fix_collection(client, coll_name, expected_dims)
+            
         except Exception as e:
             logger.warning(f"检查Qdrant集合时出错: {e}")
     
+    def _check_and_fix_collection(self, client, collection_name: str, expected_dims: int):
+        """检查并修复单个集合的维度"""
+        try:
+            collection_info = client.get_collection(collection_name)
+            current_dims = collection_info.config.params.vectors.size
+            
+            if current_dims != expected_dims:
+                logger.warning(f"集合 {collection_name} 维度不匹配: 期望{expected_dims}, 实际{current_dims}, 删除并手动重建")
+                client.delete_collection(collection_name)
+                # 手动创建正确维度的集合
+                self._create_collection_with_correct_dims(client, collection_name, expected_dims)
+            else:
+                logger.info(f"集合 {collection_name} 维度正确: {current_dims}")
+        except Exception:
+            # 集合不存在，手动创建
+            logger.info(f"集合 {collection_name} 不存在，手动创建（维度: {expected_dims}）")
+            self._create_collection_with_correct_dims(client, collection_name, expected_dims)
+    
     def _create_collection_with_correct_dims(self, client, collection_name: str, dims: int):
-        """创建指定维度的Qdrant集合"""
+        """创建指定维度的Qdrant集合（包含BM25稀疏向量支持）"""
         try:
             from qdrant_client import models
             client.create_collection(
@@ -424,9 +439,14 @@ class MemoryManager:
                 vectors_config=models.VectorParams(
                     size=dims,
                     distance=models.Distance.COSINE
-                )
+                ),
+                sparse_vectors_config={
+                    "bm25": models.SparseVectorParams(
+                        modifier=models.Modifier.IDF
+                    )
+                }
             )
-            logger.info(f"已创建集合 {collection_name}，维度: {dims}")
+            logger.info(f"已创建集合 {collection_name}，维度: {dims}，已启用BM25")
         except Exception as e:
             logger.warning(f"创建集合 {collection_name} 失败: {e}")
     
@@ -444,26 +464,37 @@ class MemoryManager:
         Returns:
             str: 记忆ID
         """
+        logger.info(f"[DEBUG] add() 开始: content={content[:50]}..., user_id={self.user_id}, metadata={metadata}")
+        
         # mem0 的 add 方法需要 user_id 作为参数，而不是作为 memory 对象的一部分
         # 尝试不同的调用方式
         try:
             # 方式1: 传递 text 和 user_id
-            return self.store.add(content, user_id=self.user_id, metadata=metadata)
+            logger.info(f"[DEBUG] add() 尝试方式1: store.add(content, user_id={self.user_id}, metadata={metadata})")
+            result = self.store.add(content, user_id=self.user_id, metadata=metadata)
+            logger.info(f"[DEBUG] add() 方式1成功: result={result}")
+            return result
         except TypeError as e:
             logger.warning(f"add 调用失败 (方式1): {e}，尝试方式2")
             try:
                 # 方式2: 只传递 text (mem0 可能会从配置中读取 user_id)
-                return self.store.add(content, metadata=metadata)
+                logger.info(f"[DEBUG] add() 尝试方式2: store.add(content, metadata={metadata})")
+                result = self.store.add(content, metadata=metadata)
+                logger.info(f"[DEBUG] add() 方式2成功: result={result}")
+                return result
             except Exception as e2:
                 logger.error(f"add 调用失败 (方式2): {e2}")
                 # 方式3: 创建 Memory 对象并传递
+                logger.info(f"[DEBUG] add() 尝试方式3: 创建Memory对象")
                 memory = Memory(
                     id=self.store._generate_id(content) if hasattr(self.store, '_generate_id') else f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
                     content=content,
                     user_id=self.user_id,
                     metadata=metadata or {}
                 )
-                return self.store.add(memory)
+                result = self.store.add(memory)
+                logger.info(f"[DEBUG] add() 方式3成功: result={result}")
+                return result
     
     def search(self, query: str, limit: int = 10, retry_on_error: bool = True) -> List[Memory]:
         """
