@@ -147,6 +147,7 @@ class WorkspaceWidget(QWidget):
         self.file_tree.setColumnWidth(2, 120)
         self.file_tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.file_tree.itemClicked.connect(self.on_file_clicked)
+        self.file_tree.itemDoubleClicked.connect(self.on_file_double_clicked)
         self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_tree.customContextMenuRequested.connect(self.on_file_context_menu)
         self.file_tree.setStyleSheet("""
@@ -301,11 +302,20 @@ class WorkspaceWidget(QWidget):
         return f"{size:.1f}TB"
     
     def on_file_clicked(self, item: QTreeWidgetItem, column: int):
-        """文件点击事件"""
+        """文件点击事件（仅选中，不打开）"""
         file_path = self._get_item_path(item)
         
         if file_path and os.path.isfile(file_path):
             logger.info(f"点击文件: {file_path}")
+            # 单击仅选中文件，不打开（双击或右键菜单才打开）
+    
+    def on_file_double_clicked(self, item: QTreeWidgetItem, column: int):
+        """文件双击事件 - 在编辑器中打开文件"""
+        file_path = self._get_item_path(item)
+        
+        if file_path and os.path.isfile(file_path):
+            logger.info(f"双击文件: {file_path}")
+            # 发出信号，由MainWindow处理在应用内编辑器中打开
             self.file_selected.emit(file_path)
     
     def on_file_context_menu(self, position):
@@ -341,7 +351,8 @@ class WorkspaceWidget(QWidget):
         action = menu.exec(self.file_tree.viewport().mapToGlobal(position))
         
         if action == open_action and file_path:
-            self._open_file(file_path)
+            # 发出信号，由MainWindow处理在应用内编辑器中打开
+            self.file_selected.emit(file_path)
         elif action == copy_action and file_path:
             from PyQt6.QtWidgets import QApplication
             clipboard = QApplication.clipboard()

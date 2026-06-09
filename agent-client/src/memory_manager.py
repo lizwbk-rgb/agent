@@ -56,8 +56,13 @@ class Memory:
         # 处理Qdrant格式：{'id': ..., 'payload': {'memory': ..., 'user_id': ...}}
         if 'payload' in data:
             payload = data['payload']
+            # 保留Qdrant的id（在顶层）
             memory_id = data.get('id', '')
-            return cls.from_dict(payload)  # 递归处理payload
+            mem = cls.from_dict(payload)  # 递归处理payload
+            # 设置正确的id（Qdrant的id）
+            if memory_id:
+                mem.id = memory_id
+            return mem
         
         # 处理时间字段
         created_at = None
@@ -439,14 +444,26 @@ class MemoryManager:
         Returns:
             str: 记忆ID
         """
-        memory = Memory(
-            id=self.store._generate_id(content) if hasattr(self.store, '_generate_id') else f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
-            content=content,
-            user_id=self.user_id,
-            metadata=metadata or {}
-        )
-        
-        return self.store.add(memory)
+        # mem0 的 add 方法需要 user_id 作为参数，而不是作为 memory 对象的一部分
+        # 尝试不同的调用方式
+        try:
+            # 方式1: 传递 text 和 user_id
+            return self.store.add(content, user_id=self.user_id, metadata=metadata)
+        except TypeError as e:
+            logger.warning(f"add 调用失败 (方式1): {e}，尝试方式2")
+            try:
+                # 方式2: 只传递 text (mem0 可能会从配置中读取 user_id)
+                return self.store.add(content, metadata=metadata)
+            except Exception as e2:
+                logger.error(f"add 调用失败 (方式2): {e2}")
+                # 方式3: 创建 Memory 对象并传递
+                memory = Memory(
+                    id=self.store._generate_id(content) if hasattr(self.store, '_generate_id') else f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}",
+                    content=content,
+                    user_id=self.user_id,
+                    metadata=metadata or {}
+                )
+                return self.store.add(memory)
     
     def search(self, query: str, limit: int = 10, retry_on_error: bool = True) -> List[Memory]:
         """
@@ -522,15 +539,23 @@ class MemoryManager:
             logger.info(f"[DEBUG] _convert_to_memories() 完成: 返回{len(memories)}条记忆")
             return memories
         elif isinstance(results, dict):
-            # mem0可能返回单个字典
+            # mem0可能返回 {'results': [...]} 格式
             logger.info(f"[DEBUG] results是dict: keys={list(results.keys())[:10]}")
-            try:
-                mem = Memory.from_dict(results)
-                logger.info(f"[DEBUG] 转换为Memory: id={mem.id}")
-                return [mem]
-            except Exception as e:
-                logger.warning(f"[DEBUG] 转换记忆失败: {e}")
-                return []
+            
+            # 检查是否有 'results' 键
+            if 'results' in results:
+                # 递归处理 results 列表
+                logger.info(f"[DEBUG] 递归处理 results['results']: len={len(results['results'])}")
+                return self._convert_to_memories(results['results'])
+            else:
+                # 直接是记忆字典
+                try:
+                    mem = Memory.from_dict(results)
+                    logger.info(f"[DEBUG] 转换为Memory: id={mem.id}")
+                    return [mem]
+                except Exception as e:
+                    logger.warning(f"[DEBUG] 转换记忆失败: {e}")
+                    return []
         
         logger.warning(f"[DEBUG] results类型不支持: {type(results)}")
         return []

@@ -87,6 +87,7 @@ class CodeEditorWidget(QWidget):
     # 信号
     file_changed = pyqtSignal(str)  # 文件路径变化信号
     content_changed = pyqtSignal()  # 内容变化信号
+    close_requested = pyqtSignal()  # 关闭请求信号
     
     def __init__(self, parent: QWidget = None):
         """
@@ -175,6 +176,25 @@ class CodeEditorWidget(QWidget):
             }
         """)
         toolbar_layout.addWidget(self.save_as_btn)
+        
+        # 关闭按钮
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setMinimumWidth(30)
+        self.close_btn.setMaximumWidth(30)
+        self.close_btn.clicked.connect(self.on_close_clicked)
+        self.close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-size: 14px;
+                color: #666;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border-radius: 4px;
+            }
+        """)
+        toolbar_layout.addWidget(self.close_btn)
         
         main_layout.addWidget(toolbar)
         
@@ -327,6 +347,10 @@ class CodeEditorWidget(QWidget):
         if file_path:
             self.current_file = file_path
             self.save_file()
+    
+    def on_close_clicked(self):
+        """关闭按钮点击事件"""
+        self.close_requested.emit()
     
     def on_text_changed(self):
         """文本变化事件"""

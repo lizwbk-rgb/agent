@@ -130,6 +130,9 @@ class ThinkingArea(QFrame):
         # 禁用滚动条，让内容自动展开
         self.content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.content_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # 设置大小策略为Expanding，让内容区域自动展开
+        from PyQt6.QtWidgets import QSizePolicy
+        self.content_browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.content_browser.setStyleSheet("""
             QTextBrowser {
                 border: none;
@@ -202,6 +205,9 @@ class ThinkingArea(QFrame):
             self.show()
             self.loading_label.hide()
         
+        # 延迟调整内容区域高度，确保HTML渲染完成
+        QTimer.singleShot(100, self._adjust_content_height)
+        
         logger.info(f"设置思考内容: {len(content)} 字符")
     
     def update_content(self, content: str):
@@ -218,6 +224,9 @@ class ThinkingArea(QFrame):
         html_content = renderer.render(content)
         
         self.content_browser.setHtml(html_content)
+        
+        # 延迟调整内容区域高度，确保HTML渲染完成
+        QTimer.singleShot(100, self._adjust_content_height)
         
         # 显示组件
         if self._has_content and not self.isVisible():
@@ -297,6 +306,41 @@ class ThinkingArea(QFrame):
             if expanded:
                 self.toggle_btn.setText("▼")
                 self.content_container.setMaximumHeight(16777215)
+                # 展开后调整高度
+                self._adjust_content_height()
             else:
                 self.toggle_btn.setText("▶")
                 self.content_container.setMaximumHeight(0)
+    
+    def _adjust_content_height(self):
+        """调整内容区域高度以显示完整内容"""
+        if not self._has_content:
+            return
+        
+        # 获取文档高度
+        doc = self.content_browser.document()
+        doc_height = doc.size().height()
+        
+        # 加上内边距
+        margins = self.content_container.layout().contentsMargins()
+        total_height = int(doc_height) + margins.top() + margins.bottom() + 20
+        
+        # 限制最大高度为400px，避免过大
+        max_height = 400
+        if total_height > max_height:
+            total_height = max_height
+            # 超过最大高度时启用滚动条
+            self.content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        else:
+            # 未超过最大高度时禁用滚动条
+            self.content_browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # 设置内容浏览器最小高度（让它自适应）
+        self.content_browser.setMinimumHeight(int(doc_height) + 10)
+        self.content_browser.setMaximumHeight(16777215)  # 允许增长
+        
+        # 如果已展开，调整容器高度
+        if self._is_expanded:
+            self.content_container.setMaximumHeight(total_height)
+        
+        logger.info(f"调整内容高度: {total_height}px")

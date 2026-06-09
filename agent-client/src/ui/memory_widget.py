@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFrame,
     QScrollArea,
-    QAbstractItemView
+    QAbstractItemView,
+    QTabWidget
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QCursor
@@ -116,6 +117,7 @@ class MemoryWidget(QWidget):
     记忆管理组件
     
     显示记忆列表，支持刷新、删除、清空操作
+    分为"系统提取"和"用户自定义"两个页签
     """
     
     # 信号
@@ -140,6 +142,8 @@ class MemoryWidget(QWidget):
         
         self.memory_manager = memory_manager or MemoryManager()
         self.memories: List[Memory] = []
+        self.system_memories: List[Memory] = []  # 系统提取的记忆
+        self.custom_memories: List[Memory] = []  # 用户自定义的记忆
         
         self.setup_ui()
         self.load_memories()
@@ -233,11 +237,44 @@ class MemoryWidget(QWidget):
         
         main_layout.addLayout(button_layout)
         
-        # 记忆列表区域（带滚动条）
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.list_widget.itemClicked.connect(self.on_memory_item_clicked)
-        self.list_widget.setStyleSheet("""
+        # 页签组件
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                background-color: #fafafa;
+            }
+            QTabBar::tab {
+                background-color: #f0f0f0;
+                border: 1px solid #ddd;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                padding: 8px 20px;
+                font-size: 12px;
+                color: #666;
+            }
+            QTabBar::tab:selected {
+                background-color: #fff;
+                color: #2196F3;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #e8e8e8;
+            }
+        """)
+        
+        # 系统提取页
+        self.system_tab = QWidget()
+        system_layout = QVBoxLayout(self.system_tab)
+        system_layout.setContentsMargins(8, 8, 8, 8)
+        system_layout.setSpacing(0)
+        
+        self.system_list_widget = QListWidget()
+        self.system_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.system_list_widget.itemClicked.connect(self.on_system_memory_item_clicked)
+        self.system_list_widget.setStyleSheet("""
             QListWidget {
                 border: none;
                 background-color: transparent;
@@ -247,12 +284,12 @@ class MemoryWidget(QWidget):
                 padding: 4px 8px;
             }
         """)
-        main_layout.addWidget(self.list_widget, 1)  # stretch=1，填充剩余空间
+        system_layout.addWidget(self.system_list_widget)
         
-        # 空状态提示（居中显示在列表区域）
-        self.empty_label = QLabel("暂无记忆")
-        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_label.setStyleSheet("""
+        # 系统提取空状态
+        self.system_empty_label = QLabel("暂无系统提取的记忆")
+        self.system_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.system_empty_label.setStyleSheet("""
             QLabel {
                 color: #999;
                 font-size: 14px;
@@ -260,8 +297,49 @@ class MemoryWidget(QWidget):
                 background-color: transparent;
             }
         """)
-        self.empty_label.hide()
-        main_layout.addWidget(self.empty_label, 1)  # stretch=1，与列表区域共享空间
+        self.system_empty_label.hide()
+        system_layout.addWidget(self.system_empty_label)
+        
+        self.tab_widget.addTab(self.system_tab, "系统提取")
+        
+        # 用户自定义页
+        self.custom_tab = QWidget()
+        custom_layout = QVBoxLayout(self.custom_tab)
+        custom_layout.setContentsMargins(8, 8, 8, 8)
+        custom_layout.setSpacing(0)
+        
+        self.custom_list_widget = QListWidget()
+        self.custom_list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.custom_list_widget.itemClicked.connect(self.on_custom_memory_item_clicked)
+        self.custom_list_widget.setStyleSheet("""
+            QListWidget {
+                border: none;
+                background-color: transparent;
+            }
+            QListWidget::item {
+                border: none;
+                padding: 4px 8px;
+            }
+        """)
+        custom_layout.addWidget(self.custom_list_widget)
+        
+        # 用户自定义空状态
+        self.custom_empty_label = QLabel("暂无用户自定义记忆")
+        self.custom_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.custom_empty_label.setStyleSheet("""
+            QLabel {
+                color: #999;
+                font-size: 14px;
+                padding: 40px;
+                background-color: transparent;
+            }
+        """)
+        self.custom_empty_label.hide()
+        custom_layout.addWidget(self.custom_empty_label)
+        
+        self.tab_widget.addTab(self.custom_tab, "用户自定义")
+        
+        main_layout.addWidget(self.tab_widget, 1)  # stretch=1，填充剩余空间
         
         # 设置整体样式
         self.setStyleSheet("""
@@ -276,44 +354,67 @@ class MemoryWidget(QWidget):
         """加载记忆列表"""
         try:
             self.memories = self.memory_manager.get_all()
+            # 分类记忆
+            self.system_memories = []
+            self.custom_memories = []
+            for memory in self.memories:
+                source = memory.metadata.get('source', '') if memory.metadata else ''
+                if source == 'auto_extract':
+                    self.system_memories.append(memory)
+                else:
+                    self.custom_memories.append(memory)
             self.display_memories()
-            logger.info(f"加载了 {len(self.memories)} 条记忆")
+            logger.info(f"加载了 {len(self.memories)} 条记忆（系统提取: {len(self.system_memories)}, 用户自定义: {len(self.custom_memories)}）")
         except Exception as e:
             logger.error(f"加载记忆失败: {str(e)}")
             self.show_empty_state()
     
     def display_memories(self):
         """显示记忆列表"""
-        self.list_widget.clear()
+        # 显示系统提取的记忆
+        self.system_list_widget.clear()
+        if self.system_memories:
+            self.system_list_widget.show()
+            self.system_empty_label.hide()
+            for memory in self.system_memories:
+                item = QListWidgetItem()
+                item_widget = MemoryItemWidget(memory)
+                item_widget.clicked.connect(self.on_memory_clicked)
+                item.setSizeHint(item_widget.sizeHint())
+                self.system_list_widget.addItem(item)
+                self.system_list_widget.setItemWidget(item, item_widget)
+        else:
+            self.system_list_widget.hide()
+            self.system_empty_label.show()
         
-        if not self.memories:
-            self.show_empty_state()
-            return
-        
-        # 显示列表，隐藏空状态
-        self.list_widget.show()
-        self.empty_label.hide()
+        # 显示用户自定义的记忆
+        self.custom_list_widget.clear()
+        if self.custom_memories:
+            self.custom_list_widget.show()
+            self.custom_empty_label.hide()
+            for memory in self.custom_memories:
+                item = QListWidgetItem()
+                item_widget = MemoryItemWidget(memory)
+                item_widget.clicked.connect(self.on_memory_clicked)
+                item.setSizeHint(item_widget.sizeHint())
+                self.custom_list_widget.addItem(item)
+                self.custom_list_widget.setItemWidget(item, item_widget)
+        else:
+            self.custom_list_widget.hide()
+            self.custom_empty_label.show()
         
         # 更新计数
-        self.count_label.setText(f"{len(self.memories)} 条记忆")
-        
-        # 添加记忆项
-        for memory in self.memories:
-            item = QListWidgetItem()
-            item_widget = MemoryItemWidget(memory)
-            item_widget.clicked.connect(self.on_memory_clicked)
-            
-            # 设置sizeHint确保widget可见（根据内容动态调整高度）
-            item.setSizeHint(item_widget.sizeHint())
-            
-            self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, item_widget)
+        total = len(self.system_memories) + len(self.custom_memories)
+        self.count_label.setText(f"{total} 条记忆")
     
     def show_empty_state(self):
         """显示空状态"""
-        self.list_widget.hide()
-        self.list_widget.clear()
-        self.empty_label.show()
+        self.system_list_widget.hide()
+        self.system_list_widget.clear()
+        self.system_empty_label.show()
+        self.custom_list_widget.hide()
+        self.custom_list_widget.clear()
+        self.custom_empty_label.show()
         self.count_label.setText("0 条记忆")
     
     def refresh_memories(self):
@@ -323,13 +424,11 @@ class MemoryWidget(QWidget):
     
     def delete_selected_memory(self):
         """删除选中的记忆"""
-        current_row = self.list_widget.currentRow()
+        memory = self.get_selected_memory()
         
-        if current_row < 0:
+        if not memory:
             QMessageBox.warning(self, "提示", "请先选择要删除的记忆")
             return
-        
-        memory = self.memories[current_row]
         
         # 确认对话框
         confirm_msg = f"确定要删除记忆 [{memory.id}] 吗？\n\n{truncate_text(memory.content, 100)}"
@@ -347,7 +446,13 @@ class MemoryWidget(QWidget):
                 
                 if success:
                     logger.info(f"删除成功: {memory.id}")
-                    self.memories.pop(current_row)
+                    # 从对应的列表中移除
+                    if memory in self.system_memories:
+                        self.system_memories.remove(memory)
+                    elif memory in self.custom_memories:
+                        self.custom_memories.remove(memory)
+                    if memory in self.memories:
+                        self.memories.remove(memory)
                     self.display_memories()
                     self.memory_deleted.emit(memory.id)
                     QMessageBox.information(self, "成功", "记忆已删除")
@@ -392,8 +497,18 @@ class MemoryWidget(QWidget):
                 QMessageBox.warning(self, "错误", f"清空记忆时发生错误: {str(e)}")
     
     def on_memory_item_clicked(self, item: QListWidgetItem):
-        """记忆项点击事件"""
-        widget = self.list_widget.itemWidget(item)
+        """记忆项点击事件（兼容旧代码）"""
+        pass
+    
+    def on_system_memory_item_clicked(self, item: QListWidgetItem):
+        """系统提取记忆项点击事件"""
+        widget = self.system_list_widget.itemWidget(item)
+        if widget:
+            self.memory_selected.emit(widget.memory.id)
+    
+    def on_custom_memory_item_clicked(self, item: QListWidgetItem):
+        """用户自定义记忆项点击事件"""
+        widget = self.custom_list_widget.itemWidget(item)
         if widget:
             self.memory_selected.emit(widget.memory.id)
     
@@ -403,10 +518,16 @@ class MemoryWidget(QWidget):
     
     def get_selected_memory(self) -> Optional[Memory]:
         """获取选中的记忆"""
-        current_row = self.list_widget.currentRow()
-        
-        if current_row >= 0 and current_row < len(self.memories):
-            return self.memories[current_row]
+        # 根据当前页签获取选中的记忆
+        current_tab = self.tab_widget.currentIndex()
+        if current_tab == 0:  # 系统提取页
+            current_row = self.system_list_widget.currentRow()
+            if current_row >= 0 and current_row < len(self.system_memories):
+                return self.system_memories[current_row]
+        else:  # 用户自定义页
+            current_row = self.custom_list_widget.currentRow()
+            if current_row >= 0 and current_row < len(self.custom_memories):
+                return self.custom_memories[current_row]
         
         return None
     

@@ -272,7 +272,12 @@ class MainWindow(QMainWindow):
             self.workspace_widget.file_selected.connect(self.on_file_selected_from_workspace)
             self.workspace_widget.file_added_to_session.connect(self.on_file_added_to_session)
             self.workspace_widget.workspace_path_changed.connect(self.on_workspace_path_changed)
-            logger.info("工作区信号已连接")
+        
+        # 连接代码编辑器关闭信号
+        if hasattr(self, 'code_editor') and self.code_editor:
+            self.code_editor.close_requested.connect(self.on_code_editor_close_requested)
+        
+        logger.info("工作区信号已连接")
     
     def set_mode(self, mode: ChatMode):
         """
@@ -450,10 +455,32 @@ class MainWindow(QMainWindow):
         
         # 在Craft模式下，打开文件到代码编辑器
         if self.current_mode == ChatMode.CRAFT and hasattr(self, 'code_editor'):
+            # 如果代码编辑器当前不可见，设置为可见并调整分割器比例
+            if not self.code_editor.isVisible():
+                self.code_editor.setVisible(True)
+                # 调整center_splitter比例：代码编辑器50%，对话50%
+                if hasattr(self, 'center_splitter'):
+                    total_width = self.center_splitter.width()
+                    self.center_splitter.setSizes([int(total_width/2), int(total_width/2)])
             self.code_editor.open_file(file_path)
         else:
             # 在对话中显示文件信息
             self.chat_widget.add_system_message(f"已从工作区选择文件: {file_name}")
+    
+    def on_code_editor_close_requested(self):
+        """代码编辑器关闭请求事件"""
+        logger.info("代码编辑器关闭请求")
+        
+        # 隐藏代码编辑器
+        if hasattr(self, 'code_editor') and self.code_editor:
+            self.code_editor.setVisible(False)
+        
+        # 调整center_splitter比例：代码编辑器0%，对话100%
+        if hasattr(self, 'center_splitter'):
+            total_width = self.center_splitter.width()
+            self.center_splitter.setSizes([0, total_width])
+        
+        logger.info("代码编辑器已关闭")
     
     def on_file_added_to_session(self, file_path: str):
         """文件添加到会话事件"""

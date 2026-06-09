@@ -345,15 +345,26 @@ class Agent:
         Returns:
             str: 格式化的记忆上下文
         """
+        logger.info(f"搜索相关记忆 - 查询: {query[:50]}...")
+        
         # 搜索相关记忆
         max_memories = self.config.MAX_MEMORY_COUNT
         memories = self.memory_manager.search(query, limit=max_memories)
         
+        logger.info(f"搜索到 {len(memories)} 条相关记忆")
+        
         if not memories:
+            logger.info("没有相关记忆，返回空字符串")
             return ""
         
+        # 记录搜索到的记忆内容
+        for i, mem in enumerate(memories):
+            logger.info(f"记忆[{i}]: {mem.content[:50]}...")
+        
         # 格式化为上下文
-        return self.memory_manager.format_memories_for_context(memories)
+        context = self.memory_manager.format_memories_for_context(memories)
+        logger.info(f"格式化后的记忆上下文 ({len(context)} 字符): {context[:100]}...")
+        return context
     
     def _build_context_messages(self, memory_context: str) -> List[Dict[str, str]]:
         """
@@ -375,10 +386,13 @@ class Agent:
         
         # 如果有记忆上下文，添加记忆信息
         if memory_context:
+            logger.info(f"注入记忆上下文到提示词 ({len(memory_context)} 字符)")
             messages.append({
                 "role": "system",
                 "content": f"{memory_context}\n\n请参考以上记忆信息来回答用户问题。"
             })
+        else:
+            logger.info("没有记忆上下文可注入")
         
         return messages
     
@@ -534,6 +548,36 @@ class Agent:
             ChatResult: 对话结果
         """
         logger.info(f"流式处理消息: {truncate_text(user_message, 50)}... Model: {model}, Thinking: {enable_thinking}")
+        
+        # 0. 解析消息中的 @ 文件引用（Craft模式）
+        file_contents = []
+        # 匹配 @文件路径（@后到空白前的内容）
+        at_pattern = r'@(\S+)'  # \S+ 匹配非空白字符
+        at_matches = re.findall(at_pattern, user_message)
+        
+        if at_matches:
+            logger.info(f"解析到 {len(at_matches)} 个 @ 文件引用")
+            for file_path in at_matches:
+                # 移除可能的引号包裹
+                if file_path.startswith('"') and file_path.endswith('"'):
+                    file_path = file_path[1:-1]
+                elif file_path.startswith("'") and file_path.endswith("'"):
+                    file_path = file_path[1:-1]
+                
+                if os.path.exists(file_path):
+                    try:
+                        content = extract_file_text(file_path)
+                        file_contents.append(f"【引用文件: {file_path}】\n{content}")
+                        logger.info(f"读取引用文件: {file_path} ({len(content)} 字符)")
+                    except Exception as e:
+                        logger.warning(f"读取引用文件失败: {file_path}, {e}")
+                else:
+                    logger.warning(f"@ 引用文件不存在: {file_path}")
+        
+        # 如果有引用文件内容，附加到用户消息末尾
+        if file_contents:
+            user_message = user_message + "\n\n" + "\n\n".join(file_contents)
+            logger.info(f"附加 {len(file_contents)} 个引用文件内容到消息（总长度: {len(user_message)}）")
         
         # 1. 检查是否是记忆指令
         command_result = self._handle_memory_command(user_message)
@@ -714,14 +758,17 @@ class Agent:
         Returns:
             List[Dict]: 历史消息列表
         """
+        # 过滤掉 "thinking" 角色的消息（API 不接受这个角色）
+        valid_messages = [msg for msg in self.conversation_history if msg.role != "thinking"]
+        
         # 计算要保留的消息数
         max_messages = self.max_history_messages - 2  # 减去当前消息和回复
         
-        if len(self.conversation_history) <= max_messages:
-            return [msg.to_api_format() for msg in self.conversation_history]
+        if len(valid_messages) <= max_messages:
+            return [msg.to_api_format() for msg in valid_messages]
         
         # 保留最近的消息
-        recent_messages = self.conversation_history[-max_messages:]
+        recent_messages = valid_messages[-max_messages:]
         return [msg.to_api_format() for msg in recent_messages]
     
     def _extract_memories_from_conversation(
@@ -735,25 +782,47 @@ class Agent:
         使用LLM自动识别对话中的关键信息
         """
         try:
-            # 构建提取提示
-            extract_prompt = f"""分析以下对话，提取用户的关键信息（如偏好、个人信息、习惯等）。
+            logger.info(f"开始提取记忆 - 用户消息: {truncate_text(user_msg.content, 50)}")
+            
+            # 构建提取提示（要求输出中文）
+            extract_prompt = f"""请分析以下对话，从中提取用户的关键信息（如偏好、个人信息、工作、习惯等）。
 
+【对话内容】
 用户: {truncate_text(user_msg.content, 500)}
 AI: {truncate_text(assistant_msg.content, 500)}
 
-请按以下格式输出提取的记忆（如果没有可提取的信息，输出"无"）：
-1. [记忆内容1]
-2. [记忆内容2]
-...
+【任务说明】
+请从上述对话中提取用户的关键信息。这些信息可能是：
+- 用户的个人信息（姓名、地点、职业等）
+- 用户的工作信息（公司、部门、职位等）
+- 用户的偏好和习惯
+- 用户提到的其他重要信息
 
-只输出记忆内容，不要解释。"""
+【输出要求】
+1. 必须使用中文输出
+2. 每条记忆格式："用户[信息描述]"
+3. 如果没有可提取的新信息，输出"无"
+4. 只输出记忆内容，不要输出任何解释、标题或额外文字
+
+【输出示例】
+如果用户说"我是深圳的软件测试工程师"：
+用户来自深圳
+用户是一名软件测试工程师
+
+如果用户说"我在腾讯做外包"：
+用户在腾讯工作
+用户是外包人员
+
+【开始输出】"""
             
             # 调用API提取记忆
+            logger.info(f"调用API提取记忆...")
             response = self.deepseek_client.simple_chat(
                 extract_prompt,
                 temperature=0.1,
                 max_tokens=200
             )
+            logger.info(f"API返回记忆提取结果: {truncate_text(response, 100)}")
             
             # 解析记忆
             memories = []
@@ -765,13 +834,16 @@ AI: {truncate_text(assistant_msg.content, 500)}
                     if memory and memory != "无":
                         memories.append(memory)
             
+            logger.info(f"解析到 {len(memories)} 条记忆")
+            
             # 添加记忆
             for memory in memories[:3]:  # 最多添加3条记忆
+                logger.info(f"添加记忆: {truncate_text(memory, 30)}")
                 self.memory_manager.add(memory, {"source": "auto_extract"})
                 logger.info(f"自动提取记忆: {truncate_text(memory, 30)}...")
                 
         except Exception as e:
-            logger.debug(f"记忆提取失败: {str(e)}")
+            logger.error(f"记忆提取失败: {str(e)}", exc_info=True)
             # 记忆提取失败不影响主流程
     
     # ==================== 会话管理 ====================

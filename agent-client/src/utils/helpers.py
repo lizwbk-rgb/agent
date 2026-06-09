@@ -292,6 +292,12 @@ def format_relative_time(timestamp: datetime) -> str:
         str: 相对时间字符串
     """
     now = datetime.now()
+    
+    # 处理时区问题：如果timestamp是offset-aware，将其转换为offset-naive
+    if timestamp.tzinfo is not None:
+        # 转换为本地时间并移除时区信息
+        timestamp = timestamp.replace(tzinfo=None)
+    
     diff = now - timestamp
     
     seconds = diff.total_seconds()
