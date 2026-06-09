@@ -9,6 +9,7 @@ import os
 import re
 import logging
 import uuid
+import concurrent.futures
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -114,6 +115,9 @@ class Agent:
         
         # 构建系统提示词
         self.system_prompt = self._build_system_prompt(system_prompt)
+        
+        # 创建线程池执行器用于异步操作（数据库写入、记忆提取等）
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="AgentAsync")
         
         logger.info(f"Agent初始化完成 - User: {self.user_id}, Mode: {self.current_mode.value}")
     
@@ -396,6 +400,37 @@ class Agent:
         
         return messages
     
+    def _async_db_operation(self, operation: str, data: dict):
+        """
+        异步执行数据库操作的辅助方法（在后台线程中调用）
+        
+        Args:
+            operation: 操作类型
+            data: 操作数据
+        """
+        try:
+            if operation == 'create_conversation':
+                conversation_id = data.get('conversation_id')
+                self.conversation_db.create_conversation_record(conversation_id)
+                logger.info(f"异步创建会话记录: {conversation_id}")
+            elif operation == 'save_message':
+                self.conversation_db.save_message(
+                    data.get('conversation_id'),
+                    data.get('role'),
+                    data.get('content'),
+                    data.get('timestamp'),
+                    data.get('file_path')
+                )
+                logger.info(f"异步保存消息: {data.get('conversation_id')}, {data.get('role')}")
+            elif operation == 'update_conversation_title':
+                self.conversation_db.update_conversation_title(
+                    data.get('conversation_id'),
+                    data.get('title')
+                )
+                logger.info(f"异步更新会话标题: {data.get('conversation_id')}")
+        except Exception as e:
+            logger.error(f"异步数据库操作失败 ({operation}): {e}", exc_info=True)
+    
     # ==================== 对话处理 ====================
     
     def chat(
@@ -446,28 +481,41 @@ class Agent:
         )
         self.conversation_history.append(user_msg)
         
-        # 保存用户消息到数据库（第一次发送消息时创建会话记录）
+        # 异步保存用户消息到数据库（第一次发送消息时创建会话记录）
         if self.current_conversation_id:
-            # 如果会话尚未持久化，先创建数据库记录
+            # 如果会话尚未持久化，先创建数据库记录（异步）
             if not getattr(self, '_conversation_persisted', False):
-                self.conversation_db.create_conversation_record(self.current_conversation_id)
+                self._executor.submit(
+                    self._async_db_operation,
+                    'create_conversation',
+                    {'conversation_id': self.current_conversation_id}
+                )
                 self._conversation_persisted = True
-                logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                logger.info(f"异步会话持久化已提交: {self.current_conversation_id}")
             
-            self.conversation_db.save_message(
-                self.current_conversation_id,
-                "user",
-                user_message,
-                user_msg.timestamp,
-                file_path
+            # 异步保存用户消息
+            self._executor.submit(
+                self._async_db_operation,
+                'save_message',
+                {
+                    'conversation_id': self.current_conversation_id,
+                    'role': 'user',
+                    'content': user_message,
+                    'timestamp': user_msg.timestamp,
+                    'file_path': file_path
+                }
             )
             
-            # 如果是第一条用户消息，生成会话标题（取前30字）
+            # 如果是第一条用户消息，生成会话标题（取前30字）- 异步
             user_messages = [m for m in self.conversation_history if m.role == "user"]
             if len(user_messages) == 1:
                 title = user_message[:30] + ("..." if len(user_message) > 30 else "")
-                self.conversation_db.update_conversation_title(self.current_conversation_id, title)
-                logger.info(f"自动生成会话标题: {title}")
+                self._executor.submit(
+                    self._async_db_operation,
+                    'update_conversation_title',
+                    {'conversation_id': self.current_conversation_id, 'title': title}
+                )
+                logger.info(f"异步生成会话标题已提交: {title}")
         
         # 4. 搜索相关记忆
         memory_context = self._search_related_memories(user_message)
@@ -494,23 +542,32 @@ class Agent:
             )
             self.conversation_history.append(assistant_msg)
             
-            # 保存AI回复到数据库
+            # 异步保存AI回复到数据库
             if self.current_conversation_id:
-                # 如果会话尚未持久化，先创建数据库记录
+                # 如果会话尚未持久化，先创建数据库记录（异步）
                 if not getattr(self, '_conversation_persisted', False):
-                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._executor.submit(
+                        self._async_db_operation,
+                        'create_conversation',
+                        {'conversation_id': self.current_conversation_id}
+                    )
                     self._conversation_persisted = True
-                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                    logger.info(f"异步会话持久化已提交: {self.current_conversation_id}")
                 
-                self.conversation_db.save_message(
-                    self.current_conversation_id,
-                    "assistant",
-                    response.content,
-                    assistant_msg.timestamp
+                # 异步保存AI回复
+                self._executor.submit(
+                    self._async_db_operation,
+                    'save_message',
+                    {
+                        'conversation_id': self.current_conversation_id,
+                        'role': 'assistant',
+                        'content': response.content,
+                        'timestamp': assistant_msg.timestamp
+                    }
                 )
             
-            # 9. 尝试从对话中提取记忆
-            self._extract_memories_from_conversation(user_msg, assistant_msg)
+            # 9. 异步从对话中提取记忆
+            self._executor.submit(self._extract_memories_from_conversation, user_msg, assistant_msg)
             
             return ChatResult(
                 response=response.content,
@@ -609,28 +666,41 @@ class Agent:
         )
         self.conversation_history.append(user_msg)
         
-        # 保存用户消息到数据库（第一次发送消息时创建会话记录）
+        # 异步保存用户消息到数据库（第一次发送消息时创建会话记录）
         if self.current_conversation_id:
-            # 如果会话尚未持久化，先创建数据库记录
+            # 如果会话尚未持久化，先创建数据库记录（异步）
             if not getattr(self, '_conversation_persisted', False):
-                self.conversation_db.create_conversation_record(self.current_conversation_id)
+                self._executor.submit(
+                    self._async_db_operation,
+                    'create_conversation',
+                    {'conversation_id': self.current_conversation_id}
+                )
                 self._conversation_persisted = True
-                logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                logger.info(f"异步会话持久化已提交: {self.current_conversation_id}")
             
-            self.conversation_db.save_message(
-                self.current_conversation_id,
-                "user",
-                user_message,
-                user_msg.timestamp,
-                file_path
+            # 异步保存用户消息
+            self._executor.submit(
+                self._async_db_operation,
+                'save_message',
+                {
+                    'conversation_id': self.current_conversation_id,
+                    'role': 'user',
+                    'content': user_message,
+                    'timestamp': user_msg.timestamp,
+                    'file_path': file_path
+                }
             )
             
-            # 如果是第一条用户消息，生成会话标题（取前30字）
+            # 如果是第一条用户消息，生成会话标题（取前30字）- 异步
             user_messages = [m for m in self.conversation_history if m.role == "user"]
             if len(user_messages) == 1:
                 title = user_message[:30] + ("..." if len(user_message) > 30 else "")
-                self.conversation_db.update_conversation_title(self.current_conversation_id, title)
-                logger.info(f"自动生成会话标题: {title}")
+                self._executor.submit(
+                    self._async_db_operation,
+                    'update_conversation_title',
+                    {'conversation_id': self.current_conversation_id, 'title': title}
+                )
+                logger.info(f"异步生成会话标题已提交: {title}")
         
         # 4. 搜索相关记忆
         memory_context = self._search_related_memories(user_message)
@@ -705,39 +775,57 @@ class Agent:
             )
             self.conversation_history.append(assistant_msg)
             
-            # 保存思考内容到数据库（在AI回复之前保存，保证顺序正确）
+            # 异步保存思考内容到数据库（在AI回复之前保存，保证顺序正确）
             if self.current_conversation_id and final_thinking:
-                # 如果会话尚未持久化，先创建数据库记录
+                # 如果会话尚未持久化，先创建数据库记录（异步）
                 if not getattr(self, '_conversation_persisted', False):
-                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._executor.submit(
+                        self._async_db_operation,
+                        'create_conversation',
+                        {'conversation_id': self.current_conversation_id}
+                    )
                     self._conversation_persisted = True
-                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                    logger.info(f"异步会话持久化已提交（思考）: {self.current_conversation_id}")
                 
-                self.conversation_db.save_message(
-                    self.current_conversation_id,
-                    "thinking",
-                    final_thinking,
-                    assistant_msg.timestamp  # 使用AI消息的时间戳，保证思考内容排在AI回复之前
+                # 异步保存思考内容
+                self._executor.submit(
+                    self._async_db_operation,
+                    'save_message',
+                    {
+                        'conversation_id': self.current_conversation_id,
+                        'role': 'thinking',
+                        'content': final_thinking,
+                        'timestamp': assistant_msg.timestamp
+                    }
                 )
-                logger.info(f"保存思考内容到数据库: {len(final_thinking)} 字符")
+                logger.info(f"异步保存思考内容已提交: {len(final_thinking)} 字符")
             
-            # 保存AI回复到数据库
+            # 异步保存AI回复到数据库
             if self.current_conversation_id:
-                # 如果会话尚未持久化，先创建数据库记录（思考内容保存时可能已创建）
+                # 如果会话尚未持久化，先创建数据库记录（思考内容保存时可能已创建）（异步）
                 if not getattr(self, '_conversation_persisted', False):
-                    self.conversation_db.create_conversation_record(self.current_conversation_id)
+                    self._executor.submit(
+                        self._async_db_operation,
+                        'create_conversation',
+                        {'conversation_id': self.current_conversation_id}
+                    )
                     self._conversation_persisted = True
-                    logger.info(f"会话已持久化到数据库: {self.current_conversation_id}")
+                    logger.info(f"异步会话持久化已提交（AI回复）: {self.current_conversation_id}")
                 
-                self.conversation_db.save_message(
-                    self.current_conversation_id,
-                    "assistant",
-                    final_content,
-                    assistant_msg.timestamp
+                # 异步保存AI回复
+                self._executor.submit(
+                    self._async_db_operation,
+                    'save_message',
+                    {
+                        'conversation_id': self.current_conversation_id,
+                        'role': 'assistant',
+                        'content': final_content,
+                        'timestamp': assistant_msg.timestamp
+                    }
                 )
             
-            # 9. 尝试从对话中提取记忆
-            self._extract_memories_from_conversation(user_msg, assistant_msg)
+            # 9. 异步从对话中提取记忆
+            self._executor.submit(self._extract_memories_from_conversation, user_msg, assistant_msg)
             
             return ChatResult(
                 response=final_content,

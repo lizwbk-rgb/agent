@@ -48,6 +48,12 @@ class ConversationDB:
         conn = self._get_connection()
         cursor = conn.cursor()
         
+        # 性能优化配置
+        cursor.execute("PRAGMA journal_mode=WAL")  # WAL模式，支持并发读写
+        cursor.execute("PRAGMA synchronous=NORMAL")  # 降低同步级别，提升写入性能
+        cursor.execute("PRAGMA cache_size=-2000")  # 2MB缓存
+        cursor.execute("PRAGMA temp_store=MEMORY")  # 临时表存储在内存
+        
         # 创建conversations表
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS conversations (

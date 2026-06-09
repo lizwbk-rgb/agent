@@ -89,11 +89,16 @@ class MainWindow(QMainWindow):
         chat_layout.setContentsMargins(0, 0, 0, 0)
         chat_layout.setSpacing(0)
         
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        chat_layout.addWidget(self.main_splitter)
+        # 创建模式堆叠窗口（管理Ask/Craft模式）
+        self.mode_stacked_widget = QStackedWidget()
+        chat_layout.addWidget(self.mode_stacked_widget)
         
-        # 强制初始化组件（跳过模式检查）
-        self._setup_ask_mode()
+        # 初始化Ask和Craft模式页面（只调用一次）
+        self._init_ask_mode_page()
+        self._init_craft_mode_page()
+        
+        # 默认显示Ask模式页面
+        self.mode_stacked_widget.setCurrentWidget(self.ask_mode_page)
         
         self.stacked_widget.addWidget(self.chat_page)
         
@@ -298,16 +303,20 @@ class MainWindow(QMainWindow):
         self.current_mode = mode
         self.agent.set_mode(mode)
         
-        # 清除现有组件
-        while self.main_splitter.count():
-            widget = self.main_splitter.widget(0)
-            widget.setParent(None)  # 从分割器移除widget
-            widget.deleteLater()
-        
+        # 移动chat_widget到目标splitter
         if mode == ChatMode.ASK:
-            self._setup_ask_mode()
+            # 从center_splitter移到ask_splitter
+            self.ask_splitter.addWidget(self.chat_widget)
+            
+            # 切换到Ask模式页面
+            self.mode_stacked_widget.setCurrentWidget(self.ask_mode_page)
         else:
-            self._setup_craft_mode()
+            # 从ask_splitter移到center_splitter
+            self.center_splitter.addWidget(self.chat_widget)
+            
+            # 切换到Craft模式页面
+            self.mode_stacked_widget.setCurrentWidget(self.craft_mode_page)
+            
             # 恢复工作区路径
             if old_workspace_path and hasattr(self, 'workspace_widget'):
                 self.workspace_widget.set_workspace(old_workspace_path)
@@ -340,72 +349,86 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'clear_workspace_action'):
             self.clear_workspace_action.setEnabled(self.current_mode == ChatMode.CRAFT)
     
-    def _setup_ask_mode(self):
-        """设置Ask模式布局（对话100%）"""
-        # 对话组件
-        self.chat_widget = ChatWidget(self.agent)
-        self.chat_widget.setup_file_drop()
+    def _init_ask_mode_page(self):
+        """初始化Ask模式页面（只调用一次）"""
+        # 创建Ask模式页面
+        self.ask_mode_page = QWidget()
+        ask_layout = QVBoxLayout(self.ask_mode_page)
+        ask_layout.setContentsMargins(0, 0, 0, 0)
+        ask_layout.setSpacing(0)
         
-        # 同步模式到chat_widget
-        self.chat_widget.set_mode(self.current_mode.value)
+        # 创建Ask模式的splitter（垂直：只有chat_widget）
+        self.ask_splitter = QSplitter(Qt.Orientation.Vertical)
         
-        # 添加到分割器
-        self.main_splitter.addWidget(self.chat_widget)
+        # 创建chat_widget（Ask模式专用，或与Craft模式共享）
+        # 采用共享方案：chat_widget在__init_ui中创建，这里只是引用
+        if not hasattr(self, 'chat_widget') or not self.chat_widget:
+            self.chat_widget = ChatWidget(self.agent)
+            self.chat_widget.setup_file_drop()
+        
+        # 将chat_widget添加到ask_splitter
+        self.ask_splitter.addWidget(self.chat_widget)
         
         # 设置比例
-        self.main_splitter.setStretchFactor(0, 100)
+        self.ask_splitter.setStretchFactor(0, 100)
         
-        # 连接信号
-        self._setup_connections()
+        # 将ask_splitter添加到页面布局
+        ask_layout.addWidget(self.ask_splitter)
         
-        # 保存当前模式
-        self.settings.setValue("mode", "ask")
+        # 将页面添加到mode_stacked_widget
+        self.mode_stacked_widget.addWidget(self.ask_mode_page)
+        
+        logger.info("Ask模式页面初始化完成")
     
-    def _setup_craft_mode(self):
-        """设置Craft模式布局（文件树15% + 代码编辑器0% + 对话85%，默认隐藏代码编辑器）"""
-        # 工作区组件（文件树）
-        from .workspace_widget import WorkspaceWidget
-        self.workspace_widget = WorkspaceWidget()
+    def _init_craft_mode_page(self):
+        """初始化Craft模式页面（只调用一次）"""
+        # 创建Craft模式页面
+        self.craft_mode_page = QWidget()
+        craft_layout = QVBoxLayout(self.craft_mode_page)
+        craft_layout.setContentsMargins(0, 0, 0, 0)
+        craft_layout.setSpacing(0)
         
-        # 代码编辑器组件（默认隐藏）
-        from .code_editor_widget import CodeEditorWidget
-        self.code_editor = CodeEditorWidget()
-        self.code_editor.setVisible(False)  # 默认隐藏
+        # 创建Craft模式的splitter（水平：工作区 + 中心区域）
+        self.craft_splitter = QSplitter(Qt.Orientation.Horizontal)
         
-        # 对话组件
-        self.chat_widget = ChatWidget(self.agent)
-        self.chat_widget.setup_file_drop()
+        # 工作区组件（文件树）- 懒加载，只在第一次创建
+        if not hasattr(self, 'workspace_widget') or not self.workspace_widget:
+            from .workspace_widget import WorkspaceWidget
+            self.workspace_widget = WorkspaceWidget()
+            # 首次创建时连接信号
+            self._connect_workspace_signals()
         
-        # 同步模式到chat_widget
-        self.chat_widget.set_mode(self.current_mode.value)
+        # 代码编辑器组件（默认隐藏）- 懒加载
+        if not hasattr(self, 'code_editor') or not self.code_editor:
+            from .code_editor_widget import CodeEditorWidget
+            self.code_editor = CodeEditorWidget()
+            self.code_editor.setVisible(False)  # 默认隐藏
+            # 连接关闭信号
+            self.code_editor.close_requested.connect(self.on_code_editor_close_requested)
         
-        # 如果工作区已有路径，设置到chat_widget（用于文件引用）
-        if self.workspace_widget.workspace_path:
-            self.chat_widget.set_workspace_path(self.workspace_widget.workspace_path)
-        
-        # 创建中间分割器（代码编辑器 + 对话）
+        # 创建中心分割器（代码编辑器 + 对话）
         self.center_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.center_splitter.addWidget(self.code_editor)
-        self.center_splitter.addWidget(self.chat_widget)
+        # 注意：chat_widget暂时不添加到center_splitter，等到切换模式时再添加
         self.center_splitter.setStretchFactor(0, 0)  # 代码编辑器默认占 0%
-        self.center_splitter.setStretchFactor(1, 100)  # 对话占 100%
+        self.center_splitter.setStretchFactor(1, 100)  # 对话占 100%（但此时没有chat_widget）
         
-        # 添加到主分割器
-        self.main_splitter.addWidget(self.workspace_widget)
-        self.main_splitter.addWidget(self.center_splitter)
+        # 将工作区和中心分割器添加到craft_splitter
+        self.craft_splitter.addWidget(self.workspace_widget)
+        self.craft_splitter.addWidget(self.center_splitter)
         
         # 设置比例（工作区200px，右侧区域占剩余空间）
-        self.main_splitter.setSizes([200, 1200])
+        self.craft_splitter.setSizes([200, 1200])
         
-        # 连接信号（包含工作区信号和代码编辑器信号）
-        self._setup_connections()
+        # 将craft_splitter添加到页面布局
+        craft_layout.addWidget(self.craft_splitter)
         
-        # 保存当前模式
-        self.settings.setValue("mode", "craft")
+        # 将页面添加到mode_stacked_widget
+        self.mode_stacked_widget.addWidget(self.craft_mode_page)
         
-        # 更新工作区标签
-        if self.workspace_widget.workspace_path:
-            self.workspace_label.setText(f"工作区: {self.workspace_widget.workspace_path}")
+        logger.info("Craft模式页面初始化完成")
+    
+
     
     # ==================== 事件处理 ====================
     

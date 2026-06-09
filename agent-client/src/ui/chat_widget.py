@@ -68,6 +68,10 @@ class MessageBubble(QFrame):
         self.file_path = file_path
         self.is_thinking = is_thinking
         
+        # 节流计时器 - 减少 setHtml 调用频率
+        self._update_timer = None
+        self._pending_content = None
+        
         self.setup_ui()
     
     def setup_ui(self):
@@ -198,16 +202,32 @@ class MessageBubble(QFrame):
     
     def update_content(self, new_content: str):
         """
-        更新消息内容（用于流式更新）
+        更新消息内容（用于流式更新）- 使用节流机制
         
         Args:
             new_content: 新的消息内容
         """
         self.content = new_content
+        self._pending_content = new_content
         
-        # 重新渲染Markdown（使用单例renderer避免重复创建）
+        # 使用节流机制 - 每100ms最多更新一次UI
+        if self._update_timer is None:
+            from PyQt6.QtCore import QTimer
+            self._update_timer = QTimer()
+            self._update_timer.setSingleShot(True)
+            self._update_timer.timeout.connect(self._do_update_content)
+        
+        # 重启计时器（100ms后触发）
+        self._update_timer.start(100)
+    
+    def _do_update_content(self):
+        """实际执行内容更新（由计时器触发）"""
+        if self._pending_content is None:
+            return
+        
+        # 重新渲染Markdown
         renderer = MarkdownRenderer.get_instance()
-        html_content = renderer.render(new_content)
+        html_content = renderer.render(self._pending_content)
         
         # 更新显示
         if hasattr(self, '_content_text_edit') and self._content_text_edit:
@@ -215,6 +235,9 @@ class MessageBubble(QFrame):
             # 延迟调整高度
             from PyQt6.QtCore import QTimer
             QTimer.singleShot(50, self._adjust_content_height)
+        
+        self._pending_content = None
+        self._update_timer = None
     
     def set_thinking_state(self, is_thinking: bool):
         """

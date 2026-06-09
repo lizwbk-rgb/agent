@@ -148,6 +148,7 @@ class WorkspaceWidget(QWidget):
         self.file_tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.file_tree.itemClicked.connect(self.on_file_clicked)
         self.file_tree.itemDoubleClicked.connect(self.on_file_double_clicked)
+        self.file_tree.itemExpanded.connect(self._on_item_expanded)  # 连接展开事件（懒加载）
         self.file_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_tree.customContextMenuRequested.connect(self.on_file_context_menu)
         self.file_tree.setStyleSheet("""
@@ -239,7 +240,7 @@ class WorkspaceWidget(QWidget):
     
     def _populate_tree(self, directory: str, parent_item: QTreeWidgetItem):
         """
-        填充文件树
+        填充文件树（懒加载模式 - 只加载当前目录，子目录推迟到展开时加载）
         
         Args:
             directory: 目录路径
@@ -264,12 +265,10 @@ class WorkspaceWidget(QWidget):
                     item.setText(0, f"📁 {entry}")
                     item.setText(1, "-")
                     
-                    # 递归添加子目录
-                    self._populate_tree(entry_path, item)
-                    
-                    # 如果子目录为空，不添加
-                    if item.childCount() == 0:
-                        continue
+                    # 懒加载：添加占位子节点，展开时再加载真实内容
+                    placeholder = QTreeWidgetItem()
+                    placeholder.setText(0, "加载中...")
+                    item.addChild(placeholder)
                     
                 else:
                     file_size = os.path.getsize(entry_path)
@@ -288,7 +287,8 @@ class WorkspaceWidget(QWidget):
             items.sort(key=lambda x: (not os.path.isdir(x[1]), x[0].text(0).lower()))
             
             # 添加到父节点
-            for item, _ in items:
+            for item, path in items:
+                item.setData(0, Qt.ItemDataRole.UserRole, path)  # 存储路径数据
                 if parent_item:
                     parent_item.addChild(item)
                 else:
@@ -298,6 +298,25 @@ class WorkspaceWidget(QWidget):
             logger.warning(f"权限不足，无法访问: {directory}")
         except Exception as e:
             logger.error(f"填充文件树失败: {str(e)}")
+    
+    def _on_item_expanded(self, item: QTreeWidgetItem):
+        """
+        目录展开事件 - 懒加载子目录内容
+        
+        Args:
+            item: 展开的树节点
+        """
+        # 检查是否有占位子节点
+        if item.childCount() == 1 and item.child(0).text(0) == "加载中...":
+            # 移除占位节点
+            item.removeChild(item.child(0))
+            
+            # 获取目录路径
+            dir_path = item.data(0, Qt.ItemDataRole.UserRole)
+            if dir_path and os.path.isdir(dir_path):
+                # 加载子目录内容
+                self._populate_tree(dir_path, item)
+                logger.info(f"懒加载目录: {dir_path}")
     
     def _format_file_size(self, size: int) -> str:
         """格式化文件大小"""
@@ -309,7 +328,9 @@ class WorkspaceWidget(QWidget):
     
     def on_file_clicked(self, item: QTreeWidgetItem, column: int):
         """文件点击事件（仅选中，不打开）"""
+        logger.info(f"文件单击事件 - item: {item}, column: {column}")
         file_path = self._get_item_path(item)
+        logger.info(f"文件路径: {file_path}")
         
         if file_path and os.path.isfile(file_path):
             logger.info(f"点击文件: {file_path}")
@@ -317,7 +338,9 @@ class WorkspaceWidget(QWidget):
     
     def on_file_double_clicked(self, item: QTreeWidgetItem, column: int):
         """文件双击事件 - 在编辑器中打开文件"""
+        logger.info(f"文件双击事件 - item: {item}, column: {column}")
         file_path = self._get_item_path(item)
+        logger.info(f"文件路径: {file_path}")
         
         if file_path and os.path.isfile(file_path):
             logger.info(f"双击文件: {file_path}")
@@ -326,11 +349,16 @@ class WorkspaceWidget(QWidget):
     
     def on_file_context_menu(self, position):
         """文件右键菜单"""
+        logger.info(f"文件右键菜单事件 - position: {position}")
         item = self.file_tree.itemAt(position)
+        logger.info(f"右键菜单 - item: {item}")
+        
         if not item:
+            logger.warning("右键菜单 - 没有选中项目")
             return
         
         file_path = self._get_item_path(item)
+        logger.info(f"右键菜单 - 文件路径: {file_path}")
         
         menu = QMenu(self)
         
@@ -374,36 +402,20 @@ class WorkspaceWidget(QWidget):
             self._open_explorer(os.path.dirname(file_path))
     
     def _get_item_path(self, item: QTreeWidgetItem) -> Optional[str]:
-        """获取树节点对应的路径"""
-        if not self.workspace_path or not item:
+        """获取树节点对应的路径（直接从UserRole数据获取）"""
+        if not item:
             return None
         
-        # 收集路径组件（从当前节点向上遍历）
-        path_components = []
+        # 直接从UserRole获取数据（我们在_populate_tree中存储了完整路径）
+        path = item.data(0, Qt.ItemDataRole.UserRole)
         
-        while item:
-            text = item.text(0)
-            # 移除emoji前缀
-            if text.startswith("📁"):
-                name = text[2:].strip()
-            elif text.startswith("📄"):
-                name = text[2:].strip()
-            else:
-                name = text.strip()
-            
-            path_components.insert(0, name)
-            item = item.parent()
+        if path:
+            logger.debug(f"_get_item_path: 从UserRole获取路径: {path}")
+            return path
         
-        # 构建完整路径：工作区路径 + 相对路径
-        if len(path_components) == 1:
-            # 顶层节点
-            full_path = os.path.join(self.workspace_path, path_components[0])
-        else:
-            # 子节点：跳过第一个元素（通常是工作区名称或重复项）
-            full_path = os.path.join(self.workspace_path, *path_components[1:])
-        
-        # 规范化路径（修复Windows混合分隔符问题）
-        return os.path.normpath(full_path)
+        # 如果没有存储路径数据，返回None（不应该发生）
+        logger.warning(f"_get_item_path: 树节点没有存储路径数据")
+        return None
     
     def on_select_workspace(self):
         """选择工作区按钮点击"""

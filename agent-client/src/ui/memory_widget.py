@@ -21,11 +21,12 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QTabWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont, QCursor
 
 from memory_manager import MemoryManager, Memory
 from utils.helpers import truncate_text, format_relative_time
+from .workers.memory_load_worker import MemoryLoadWorker
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -144,6 +145,15 @@ class MemoryWidget(QWidget):
         self.memories: List[Memory] = []
         self.system_memories: List[Memory] = []  # 系统提取的记忆
         self.custom_memories: List[Memory] = []  # 用户自定义的记忆
+        
+        # 分批渲染相关属性
+        self._display_timer = QTimer()  # 渲染定时器
+        self._display_timer.timeout.connect(self._display_next_batch)
+        self._display_index = 0  # 当前已渲染的记忆数量
+        self._display_batch_size = 20  # 每批渲染的数量
+        self._current_display_list = []  # 当前正在渲染的列表
+        self._current_display_widget = None  # 当前正在渲染的QListWidget
+        self._is_displaying_system = True  # 是否正在渲染系统记忆
         
         self.setup_ui()
         self.load_memories()
@@ -351,9 +361,23 @@ class MemoryWidget(QWidget):
         """)
     
     def load_memories(self):
-        """加载记忆列表"""
+        """加载记忆列表（异步）"""
         try:
-            self.memories = self.memory_manager.get_all()
+            # 创建并启动异步工作器
+            self.load_worker = MemoryLoadWorker(self.memory_manager)
+            self.load_worker.finished.connect(self._on_memories_loaded)
+            self.load_worker.error.connect(self._on_memories_load_error)
+            self.load_worker.progress.connect(self._on_memories_load_progress)
+            self.load_worker.start()
+            logger.info("已开始异步加载记忆")
+        except Exception as e:
+            logger.error(f"启动记忆加载失败: {str(e)}")
+            self.show_empty_state()
+    
+    def _on_memories_loaded(self, memories):
+        """记忆加载完成回调"""
+        try:
+            self.memories = memories
             # 分类记忆
             self.system_memories = []
             self.custom_memories = []
@@ -364,51 +388,101 @@ class MemoryWidget(QWidget):
                 else:
                     self.custom_memories.append(memory)
             self.display_memories()
-            logger.info(f"加载了 {len(self.memories)} 条记忆（系统提取: {len(self.system_memories)}, 用户自定义: {len(self.custom_memories)}）")
+            logger.info(f"异步加载了 {len(self.memories)} 条记忆（系统提取: {len(self.system_memories)}, 用户自定义: {len(self.custom_memories)}）")
         except Exception as e:
-            logger.error(f"加载记忆失败: {str(e)}")
+            logger.error(f"处理加载完成的记忆失败: {str(e)}")
             self.show_empty_state()
     
+    def _on_memories_load_error(self, error_msg):
+        """记忆加载错误回调"""
+        logger.error(f"异步加载记忆失败: {error_msg}")
+        self.show_empty_state()
+    
+    def _on_memories_load_progress(self, percent, description):
+        """记忆加载进度回调"""
+        logger.debug(f"记忆加载进度: {percent}%, {description}")
+    
     def display_memories(self):
-        """显示记忆列表"""
-        # 显示系统提取的记忆
-        self.system_list_widget.clear()
-        if self.system_memories:
-            self.system_list_widget.show()
-            self.system_empty_label.hide()
-            for memory in self.system_memories:
-                item = QListWidgetItem()
-                item_widget = MemoryItemWidget(memory)
-                item_widget.clicked.connect(self.on_memory_clicked)
-                item.setSizeHint(item_widget.sizeHint())
-                self.system_list_widget.addItem(item)
-                self.system_list_widget.setItemWidget(item, item_widget)
-        else:
-            self.system_list_widget.hide()
-            self.system_empty_label.show()
+        """显示记忆列表（分批渲染）"""
+        # 停止之前的渲染定时器
+        self._display_timer.stop()
         
-        # 显示用户自定义的记忆
+        # 清除列表
+        self.system_list_widget.clear()
         self.custom_list_widget.clear()
-        if self.custom_memories:
-            self.custom_list_widget.show()
-            self.custom_empty_label.hide()
-            for memory in self.custom_memories:
-                item = QListWidgetItem()
-                item_widget = MemoryItemWidget(memory)
-                item_widget.clicked.connect(self.on_memory_clicked)
-                item.setSizeHint(item_widget.sizeHint())
-                self.custom_list_widget.addItem(item)
-                self.custom_list_widget.setItemWidget(item, item_widget)
-        else:
-            self.custom_list_widget.hide()
-            self.custom_empty_label.show()
+        
+        # 检查是否有记忆
+        has_system = len(self.system_memories) > 0
+        has_custom = len(self.custom_memories) > 0
+        
+        # 设置可见性
+        self.system_list_widget.setVisible(has_system)
+        self.system_empty_label.setVisible(not has_system)
+        self.custom_list_widget.setVisible(has_custom)
+        self.custom_empty_label.setVisible(not has_custom)
         
         # 更新计数
         total = len(self.system_memories) + len(self.custom_memories)
         self.count_label.setText(f"{total} 条记忆")
+        
+        # 如果没有记忆，直接返回
+        if total == 0:
+            return
+        
+        # 启动分批渲染
+        self._display_index = 0
+        self._is_displaying_system = True
+        self._current_display_list = self.system_memories
+        self._current_display_widget = self.system_list_widget
+        
+        # 启动定时器，每10ms渲染一批
+        self._display_timer.start(10)
+        logger.info(f"启动分批渲染记忆 - 系统: {len(self.system_memories)}, 自定义: {len(self.custom_memories)}")
+    
+    def _display_next_batch(self):
+        """渲染下一批记忆"""
+        try:
+            # 如果当前列表已渲染完成，切换到下一个列表
+            if self._display_index >= len(self._current_display_list):
+                # 如果正在渲染系统记忆，切换到用户自定义记忆
+                if self._is_displaying_system and len(self.custom_memories) > 0:
+                    self._is_displaying_system = False
+                    self._current_display_list = self.custom_memories
+                    self._current_display_widget = self.custom_list_widget
+                    self._display_index = 0
+                else:
+                    # 所有记忆都渲染完成，停止定时器
+                    self._display_timer.stop()
+                    logger.info("分批渲染记忆完成")
+                    return
+            
+            # 渲染一批记忆
+            batch_end = min(self._display_index + self._display_batch_size, len(self._current_display_list))
+            
+            for i in range(self._display_index, batch_end):
+                memory = self._current_display_list[i]
+                item = QListWidgetItem()
+                item_widget = MemoryItemWidget(memory)
+                item_widget.clicked.connect(self.on_memory_clicked)
+                item.setSizeHint(item_widget.sizeHint())
+                self._current_display_widget.addItem(item)
+                self._current_display_widget.setItemWidget(item, item_widget)
+            
+            self._display_index = batch_end
+            
+            # 更新进度日志（每100条记录一次）
+            if self._display_index % 100 == 0 or self._display_index >= len(self._current_display_list):
+                logger.info(f"分批渲染进度 - 已渲染: {self._display_index}/{len(self._current_display_list)}")
+                
+        except Exception as e:
+            logger.error(f"分批渲染记忆失败: {e}", exc_info=True)
+            self._display_timer.stop()
     
     def show_empty_state(self):
         """显示空状态"""
+        # 停止渲染定时器
+        self._display_timer.stop()
+        
         self.system_list_widget.hide()
         self.system_list_widget.clear()
         self.system_empty_label.show()
