@@ -1111,12 +1111,18 @@ class ChatWidget(QWidget):
         Args:
             mode: 模式（ask/craft）
         """
+        # 暂时断开信号，避免触发on_mode_changed导致无限循环
+        self.mode_combo.currentIndexChanged.disconnect(self.on_mode_changed)
+        
         if mode == "ask":
             self.mode_combo.setCurrentIndex(0)
             self.current_mode = ChatMode.ASK
         elif mode == "craft":
             self.mode_combo.setCurrentIndex(1)
             self.current_mode = ChatMode.CRAFT
+        
+        # 重新连接信号
+        self.mode_combo.currentIndexChanged.connect(self.on_mode_changed)
         
         if self.agent:
             self.agent.set_mode(self.current_mode)

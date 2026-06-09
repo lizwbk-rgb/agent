@@ -324,6 +324,11 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'chat_widget'):
                     self.chat_widget.set_workspace_path(old_workspace_path)
         
+        # 新建临时会话（切换模式时清空对话）
+        self.agent.create_new_conversation()
+        self.chat_widget.clear_chat_display()
+        logger.info(f"切换模式时创建新临时会话: {self.agent.current_conversation_id}")
+        
         # 更新菜单项状态
         self._update_menu_state()
         
@@ -331,9 +336,13 @@ class MainWindow(QMainWindow):
         self.ask_action.setChecked(mode == ChatMode.ASK)
         self.craft_action.setChecked(mode == ChatMode.CRAFT)
         
+        # 同步更新输入区的模式选择框
+        mode_str = "ask" if mode == ChatMode.ASK else "craft"
+        self.chat_widget.set_mode(mode_str)
+        
         # 更新状态栏
         self.mode_label.setText(f"模式: {mode.value}")
-        self.statusBar().showMessage(f"已切换到 {mode.value} 模式")
+        self.statusBar().showMessage(f"已切换到 {mode.value} 模式，已新建临时会话")
         
         logger.info(f"切换到 {mode.value} 模式")
     
