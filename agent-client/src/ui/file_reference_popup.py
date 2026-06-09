@@ -132,13 +132,14 @@ class FileReferencePopup(QFrame):
                     continue
                 
                 entry_path = os.path.join(self.workspace_path, entry)
-                
+                entry_path = os.path.normpath(entry_path)  # 规范化路径，修复Windows混合分隔符问题
+
                 # 添加到列表
                 if os.path.isdir(entry_path):
                     item_text = f"📁 {entry}"
                 else:
                     item_text = f"📄 {entry}"
-                
+
                 item = QListWidgetItem(item_text)
                 self.list_widget.addItem(item)
                 self.file_list.append(entry_path)

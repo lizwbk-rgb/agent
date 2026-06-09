@@ -548,6 +548,7 @@ class Agent:
             ChatResult: 对话结果
         """
         logger.info(f"流式处理消息: {truncate_text(user_message, 50)}... Model: {model}, Thinking: {enable_thinking}")
+        logger.info(f"chat_stream: user_message='{user_message[:200]}'")
         
         # 0. 解析消息中的 @ 文件引用（Craft模式）
         file_contents = []

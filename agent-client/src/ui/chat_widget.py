@@ -30,6 +30,7 @@ from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QKeyEvent, QTextCurs
 from agent import Agent, ChatMode, ChatResult
 from memory_manager import Memory
 from utils.helpers import truncate_text, format_timestamp
+from utils.file_processor import FileProcessor
 from ui.markdown_renderer import MarkdownRenderer
 from ui.file_reference_popup import FileReferencePopup
 
@@ -293,7 +294,10 @@ class ChatWidget(QWidget):
         
         # 当前AI消息气泡引用（用于流式更新）
         self._current_ai_bubble = None
-        
+
+        # 附件文件管理：{文件名: {"path": 绝对路径, "content": 文件内容}}
+        self.attached_files = {}
+
         # 文件引用弹出框
         self.file_reference_popup = FileReferencePopup(self)
         self.file_reference_popup.file_selected.connect(self.on_file_reference_selected)
@@ -460,6 +464,8 @@ class ChatWidget(QWidget):
         self.message_input.setPlaceholderText("输入消息... (Ctrl+Enter 发送，拖拽文件到此处上传)")
         self.message_input.setMinimumHeight(40)
         self.message_input.setMaximumHeight(200)  # 最大高度200px，超出显示滚动条
+        self.message_input.setAcceptDrops(False)  # 禁用输入框默认拖拽，由ChatWidget处理
+        self.message_input.viewport().setAcceptDrops(False)  # 同时禁用viewport的拖拽处理
         self.message_input.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.message_input.setStyleSheet("""
             QTextEdit {
@@ -614,21 +620,62 @@ class ChatWidget(QWidget):
     
     def on_file_reference_selected(self, file_path: str):
         """文件引用选中事件"""
-        # 在输入框中插入文件路径
-        cursor = self.message_input.textCursor()
-        
-        # 判断来源：如果是从输入框@触发，不插入@（用户已输入）
-        # 如果是从右键菜单"添加至会话"触发，需要插入@
+        # 如果是来自输入框@触发，需要删除输入框中@及后续字符
         if hasattr(self, '_from_input_at') and self._from_input_at:
-            # 来自输入框@触发，只插入文件路径（不含@）
-            cursor.insertText(f"{file_path} ")
-            self._from_input_at = False  # 重置标志
-        else:
-            # 来自右键菜单，插入@文件路径
-            cursor.insertText(f"@{file_path} ")
-        
+            text_edit = self.message_input
+            text = text_edit.toPlainText()
+            cursor = text_edit.textCursor()
+            cursor_pos = cursor.position()
+
+            # 找到@的位置（从光标位置往前找）
+            at_pos = text.rfind('@', 0, cursor_pos)
+            if at_pos >= 0:
+                # 删除从@到光标位置的内容
+                cursor.setPosition(at_pos)
+                cursor.setPosition(cursor_pos, QTextCursor.MoveMode.KeepAnchor)
+                cursor.removeSelectedText()
+                text_edit.setTextCursor(cursor)
+
+            self._from_input_at = False
+
+        # 附加文件（读取内容并插入[文件名]到输入框）
+        self._attach_file(file_path)
+
         logger.info(f"插入文件引用: {file_path}")
-    
+
+    def _attach_file(self, file_path: str):
+        """
+        附加文件到输入框（不自动发送）
+
+        Args:
+            file_path: 文件绝对路径
+        """
+        # 规范化路径（修复Windows混合分隔符问题）
+        file_path = os.path.normpath(file_path)
+        try:
+            # 读取文件内容
+            file_processor = FileProcessor()
+            file_content = file_processor.extract_text(file_path)
+            file_name = os.path.basename(file_path)
+
+            # 存储到 attached_files
+            self.attached_files[file_name] = {
+                "path": file_path,
+                "content": file_content
+            }
+
+            # 在输入框光标处插入 [文件名]
+            cursor = self.message_input.textCursor()
+            cursor.insertText(f"[{file_name}] ")
+
+            logger.info(f"附加文件: {file_name}")
+        except Exception as e:
+            logger.error(f"读取文件失败: {file_path}, {e}")
+            # 即使读取失败，也插入文件名
+            file_name = os.path.basename(file_path)
+            cursor = self.message_input.textCursor()
+            cursor.insertText(f"[{file_name}] ")
+
     def set_workspace_path(self, workspace_path: str):
         """设置工作区路径"""
         self.workspace_path = workspace_path
@@ -636,55 +683,72 @@ class ChatWidget(QWidget):
     
     def send_message(self):
         """发送消息"""
-        # 获取输入内容
+        # 获取输入内容（含[文件名]）
         content = self.message_input.toPlainText().strip()
-        
+
         if not content:
             return
-        
+
         # 检查是否正在处理消息
         if hasattr(self, '_chat_worker') and self._chat_worker.isRunning():
             logger.warning("正在处理消息，请稍候...")
             return
-        
-        # 清空输入框
+
+        # 构建显示内容（原始内容，含[文件名]）
+        display_content = content
+
+        # 构建发送内容：将[文件名]替换为@绝对路径
+        send_content = content
+        logger.info(f"send_message: content='{content}', attached_files={list(self.attached_files.keys())}")
+        for file_name, file_info in self.attached_files.items():
+            # 替换 [文件名] 为 @绝对路径
+            old_send = send_content
+            send_content = send_content.replace(f"[{file_name}]", f"@{file_info['path']}")
+            logger.info(f"send_message: replace '[{file_name}]' with '@{file_info['path']}', result='{send_content[:100]}'")
+
+        # 清空输入框和附件
         self.message_input.clear()
-        
+        self.attached_files = {}
+
         # 发送信号
-        self.message_sent.emit(content, "")
-        
+        self.message_sent.emit(display_content, "")
+
         # 如果有agent，直接处理（使用流式）
         if self.agent:
-            self._process_message_stream(content)
+            self._process_message_stream(display_content, send_content)
     
-    def _process_message_stream(self, content: str, file_path: str = None):
+    def _process_message_stream(self, display_content: str, send_content: str = None):
         """流式处理消息"""
+        # 如果没有提供send_content，使用display_content
+        if send_content is None:
+            send_content = display_content
+
         try:
-            # 1. 显示用户消息
-            self.add_message(content, "user", file_path=file_path)
-            
+            # 1. 显示用户消息（使用display_content，含[文件名]）
+            self.add_message(display_content, "user")
+
             # 2. 显示AI思考中占位消息
             ai_bubble = self.add_message("AI思考中，请稍后......", "assistant", is_thinking=True)
             self._current_ai_bubble = ai_bubble
-            
+
             # 3. 如果启用深度思考，显示思考区域
             if self._deep_think_enabled:
                 self._show_thinking_area()
-            
+
             # 4. 禁用发送按钮
             self._disable_send_button()
-            
-            # 5. 启动ChatWorker线程
+
+            # 5. 启动ChatWorker线程（使用send_content，含@绝对路径）
             from ui.chat_worker import ChatWorker
-            
+
             self._chat_worker = ChatWorker(
                 agent=self.agent,
-                user_message=content,
-                file_path=file_path,
+                user_message=send_content,
+                file_path=None,
                 enable_thinking=self._deep_think_enabled,
                 model=self.model_selector.get_current_model()
             )
-            
+
             # 连接信号
             self._chat_worker.content_update.connect(self._on_content_update)
             self._chat_worker.thinking_update.connect(self._on_thinking_update)
@@ -692,10 +756,10 @@ class ChatWidget(QWidget):
             self._chat_worker.error.connect(self._on_chat_error)
             self._chat_worker.thinking_started.connect(self._on_thinking_started)
             self._chat_worker.thinking_finished.connect(self._on_thinking_finished)
-            
+
             # 启动线程
             self._chat_worker.start()
-            
+
         except Exception as e:
             logger.error(f"处理消息失败: {str(e)}")
             # 移除占位消息
@@ -898,6 +962,9 @@ class ChatWidget(QWidget):
             if self.agent:
                 self.agent.clear_conversation()
             
+            # 清空附件
+            self.attached_files = {}
+            
             logger.info("对话已清空")
     
     def clear_chat_display(self):
@@ -910,6 +977,9 @@ class ChatWidget(QWidget):
         
         # 清除思考区域引用（组件已被删除）
         self._thinking_area = None
+        
+        # 清空附件
+        self.attached_files = {}
         
         logger.info("聊天显示已清空")
     
@@ -953,10 +1023,10 @@ class ChatWidget(QWidget):
             os.path.expanduser("~"),
             "所有文件 (*.*);;文本文件 (*.txt);;文档 (*.pdf *.docx);;图片 (*.png *.jpg *.gif)"
         )
-        
+
         if file_path:
             self.file_uploaded.emit(file_path)
-            self._process_message("请分析这个文件", file_path=file_path)
+            self._attach_file(file_path)
     
     def on_mode_changed(self, index: int):
         """模式切换事件"""
@@ -1041,7 +1111,7 @@ class ChatWidget(QWidget):
                 file_path = url.toLocalFile()
                 if file_path:
                     self.file_uploaded.emit(file_path)
-                    self._process_message(f"请分析文件: {os.path.basename(file_path)}", file_path=file_path)
+                    self._attach_file(file_path)
                     break
     
     def keyPressEvent(self, event: QKeyEvent):

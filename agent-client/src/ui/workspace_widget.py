@@ -190,12 +190,18 @@ class WorkspaceWidget(QWidget):
         Args:
             path: 工作区路径
         """
+        if not path:
+            self.workspace_path = None
+            self.path_display.setText("未选择")
+            return
+        
         if not os.path.exists(path):
             QMessageBox.warning(self, "错误", f"工作区路径不存在: {path}")
             return
         
-        self.workspace_path = path
-        self.path_display.setText(os.path.basename(path))
+        # 规范化路径（修复Windows混合分隔符问题）
+        self.workspace_path = os.path.normpath(path)
+        self.path_display.setText(os.path.basename(self.workspace_path))
         
         # 保存设置
         settings = QSettings("AgentClient", "Workspace")
@@ -391,10 +397,13 @@ class WorkspaceWidget(QWidget):
         # 构建完整路径：工作区路径 + 相对路径
         if len(path_components) == 1:
             # 顶层节点
-            return os.path.join(self.workspace_path, path_components[0])
+            full_path = os.path.join(self.workspace_path, path_components[0])
         else:
             # 子节点：跳过第一个元素（通常是工作区名称或重复项）
-            return os.path.join(self.workspace_path, *path_components[1:])
+            full_path = os.path.join(self.workspace_path, *path_components[1:])
+        
+        # 规范化路径（修复Windows混合分隔符问题）
+        return os.path.normpath(full_path)
     
     def on_select_workspace(self):
         """选择工作区按钮点击"""
