@@ -64,18 +64,26 @@ class Memory:
                 mem.id = memory_id
             return mem
         
-        # 处理时间字段
+        # 处理时间字段（转换为本地时间）
         created_at = None
         if data.get("created_at"):
             try:
-                created_at = datetime.fromisoformat(data["created_at"])
+                dt = datetime.fromisoformat(data["created_at"])
+                # 如果有UTC时区信息，转换为本地时间
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)  # 转换为本地时间并去掉时区
+                created_at = dt
             except ValueError:
                 pass
         
         updated_at = None
         if data.get("updated_at"):
             try:
-                updated_at = datetime.fromisoformat(data["updated_at"])
+                dt = datetime.fromisoformat(data["updated_at"])
+                # 如果有UTC时区信息，转换为本地时间
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)  # 转换为本地时间并去掉时区
+                updated_at = dt
             except ValueError:
                 pass
         
