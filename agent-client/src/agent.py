@@ -363,10 +363,24 @@ class Agent:
         
         # 记录搜索到的记忆内容
         for i, mem in enumerate(memories):
-            logger.info(f"记忆[{i}]: {mem.content[:50]}...")
+            logger.info(f"记忆[{i}]: score={mem.score:.3f}, {mem.content[:50]}...")
+        
+        # 过滤低相关性记忆（阈值0.5）
+        threshold = 0.5
+        filtered_memories = [mem for mem in memories if mem.score >= threshold]
+        
+        if len(filtered_memories) < len(memories):
+            logger.info(f"过滤低相关性记忆: {len(memories)} -> {len(filtered_memories)} (阈值={threshold})")
+            for i, mem in enumerate(memories):
+                if mem.score < threshold:
+                    logger.info(f"  过滤掉: score={mem.score:.3f}, {mem.content[:50]}...")
+        
+        if not filtered_memories:
+            logger.info("过滤后没有相关记忆，返回空字符串")
+            return ""
         
         # 格式化为上下文
-        context = self.memory_manager.format_memories_for_context(memories)
+        context = self.memory_manager.format_memories_for_context(filtered_memories)
         logger.info(f"格式化后的记忆上下文 ({len(context)} 字符): {context[:100]}...")
         return context
     

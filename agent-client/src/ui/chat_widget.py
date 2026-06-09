@@ -347,6 +347,9 @@ class ChatWidget(QWidget):
         
         self.messages_layout = messages_layout
         
+        # 在底部添加stretch，使消息集中在顶部而非铺满整个会话区
+        messages_layout.addStretch(1)
+        
         # 消息滚动区域
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -955,8 +958,9 @@ class ChatWidget(QWidget):
             is_thinking=is_thinking
         )
         
-        # 添加到布局
-        self.messages_layout.addWidget(message_widget)
+        # 添加到布局（插入到stretch之前）
+        # messages_layout的最后一个项目是stretch，所以插入位置是count()-1
+        self.messages_layout.insertWidget(self.messages_layout.count() - 1, message_widget)
         
         # 滚动到底部
         self._scroll_to_bottom()
@@ -1027,7 +1031,8 @@ class ChatWidget(QWidget):
                 thinking_area.set_content(msg.content)
                 thinking_area.set_thinking_finished()
                 thinking_area.collapse()  # 默认折叠，用户可以点击展开
-                self.messages_layout.addWidget(thinking_area)
+                # 插入到stretch之前
+                self.messages_layout.insertWidget(self.messages_layout.count() - 1, thinking_area)
                 self._thinking_area = thinking_area  # 保存引用
             else:
                 # 普通消息（user/assistant）：正常显示
