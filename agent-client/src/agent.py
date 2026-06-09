@@ -784,8 +784,15 @@ class Agent:
         try:
             logger.info(f"开始提取记忆 - 用户消息: {truncate_text(user_msg.content, 50)}")
             
+            # 搜索已有记忆，避免重复提取
+            existing_memories = self.memory_manager.search(user_msg.content, limit=5)
+            existing_text = "\n".join([f"- {m.content}" for m in existing_memories]) if existing_memories else "（无）"
+            
             # 构建提取提示（要求输出中文）
             extract_prompt = f"""请分析以下对话，从中提取用户的关键信息（如偏好、个人信息、工作、习惯等）。
+
+【已有记忆】（请不要重复提取以下已有记忆）
+{existing_text}
 
 【对话内容】
 用户: {truncate_text(user_msg.content, 500)}
@@ -803,6 +810,7 @@ AI: {truncate_text(assistant_msg.content, 500)}
 2. 每条记忆格式："用户[信息描述]"
 3. 如果没有可提取的新信息，输出"无"
 4. 只输出记忆内容，不要输出任何解释、标题或额外文字
+5. 不要重复【已有记忆】中已存在的信息
 
 【输出示例】
 如果用户说"我是深圳的软件测试工程师"：
