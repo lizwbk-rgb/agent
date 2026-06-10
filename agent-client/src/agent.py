@@ -812,9 +812,8 @@ class Agent:
                     # 处理正文内容
                     if delta.content:
                         content_parts.append(delta.content)
-                        content = "".join(content_parts)
                         if content_callback:
-                            content_callback(content)
+                            content_callback(delta.content)  # 只传增量，而非全部内容
                 
                 # 更新使用信息
                 if chunk.usage:

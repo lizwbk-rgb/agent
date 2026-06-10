@@ -212,7 +212,7 @@ class ThinkingArea(QFrame):
     
     def update_content(self, content: str):
         """
-        更新思考内容（流式更新）
+        更新思考内容（完整替换，用于流式结束后）
         
         Args:
             content: 思考内容
@@ -242,6 +242,32 @@ class ThinkingArea(QFrame):
         else:
             # 没有内容时显示"思考中..."
             self.loading_label.show()
+    
+    def append_content(self, delta: str):
+        """
+        追加思考内容（增量更新，用于流式过程中）
+        
+        Args:
+            delta: 新增的思考内容增量
+        """
+        self._has_content = True
+        
+        # 增量更新：直接追加纯文本（不渲染Markdown，避免重复和性能问题）
+        self.content_browser.insertPlainText(delta)
+        
+        # 调整高度
+        QTimer.singleShot(50, self._adjust_content_height)
+        
+        # 显示组件
+        if not self.isVisible():
+            self.show()
+        
+        # 隐藏加载标签
+        self.loading_label.hide()
+        # 自动展开（仅首次）
+        if not self._is_expanded and not self._auto_expanded:
+            self.expand()
+            self._auto_expanded = True
     
     def clear_content(self):
         """清空内容"""

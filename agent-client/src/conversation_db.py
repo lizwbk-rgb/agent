@@ -231,7 +231,7 @@ class ConversationDB:
             SELECT id, role, content, timestamp, file_path
             FROM messages
             WHERE conversation_id = ?
-            ORDER BY timestamp ASC
+            ORDER BY id ASC
         """, (conversation_id,))
         
         rows = cursor.fetchall()

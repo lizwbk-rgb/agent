@@ -226,6 +226,9 @@ class MarkdownRenderer:
         # 统一换行符
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         
+        # 过滤ASCII控制字符（保留\n、\r、\t，过滤其他控制字符如\x01等）
+        text = ''.join(ch for ch in text if ord(ch) >= 32 or ch in '\n\r\t')
+        
         # 转义 & 符号（必须先处理）
         text = text.replace('&', '&amp;')
         

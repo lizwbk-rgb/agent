@@ -68,9 +68,10 @@ class MessageBubble(QFrame):
         self.file_path = file_path
         self.is_thinking = is_thinking
         
-        # 节流计时器 - 减少 setHtml 调用频率
+        # 流式更新相关状态
         self._update_timer = None
         self._pending_content = None
+        self._streaming_just_started = False  # 标志：流式刚开始，下次_do_update_content需要清空显示
         
         self.setup_ui()
     
@@ -202,38 +203,88 @@ class MessageBubble(QFrame):
     
     def update_content(self, new_content: str):
         """
-        更新消息内容（用于流式更新）- 使用节流机制
+        更新消息内容（完整替换，用于流式结束后）
         
         Args:
-            new_content: 新的消息内容
+            new_content: 新的完整消息内容
         """
         self.content = new_content
         self._pending_content = new_content
         
-        # 使用节流机制 - 每100ms最多更新一次UI
+        # 流式已结束，直接渲染完整Markdown并显示（不使用节流）
+        renderer = MarkdownRenderer.get_instance()
+        html_content = renderer.render(self.content)
+        
+        if hasattr(self, '_content_text_edit') and self._content_text_edit:
+            self._content_text_edit.setHtml(html_content)
+            # 调整高度
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, self._adjust_content_height)
+        
+        # 清理节流计时器（如果存在）
+        if hasattr(self, '_update_timer') and self._update_timer:
+            self._update_timer.stop()
+            self._update_timer = None
+        self._pending_content = None
+        self._streaming_just_started = False  # 清理标志
+
+    def append_content(self, delta: str):
+        """
+        追加流式内容（增量更新，用于流式过程中）
+        
+        Args:
+            delta: 新增的内容增量
+        """
+        self.content += delta
+        # 累积pending_content（不要覆盖，否则节流间隔内的delta会丢失）
+        if self._pending_content is None:
+            self._pending_content = delta
+        else:
+            self._pending_content += delta
+        
+        # 使用节流机制
         if self._update_timer is None:
             from PyQt6.QtCore import QTimer
             self._update_timer = QTimer()
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_content)
         
-        # 重启计时器（100ms后触发）
-        self._update_timer.start(100)
+        # 重启计时器（16ms后触发）
+        self._update_timer.start(16)
+        
+        # 调试：打印收到的delta长度
+        import sys
+        print(f"[DEBUG] append_content: delta='{delta[:20]}...' (len={len(delta)}), pending_len={len(self._pending_content)}", file=sys.stderr)
     
     def _do_update_content(self):
         """实际执行内容更新（由计时器触发）"""
+        import sys
+        print(f"[DEBUG] _do_update_content called, pending={self._pending_content[:20] if self._pending_content else None}", file=sys.stderr)
+        
         if self._pending_content is None:
+            print(f"[DEBUG] _do_update_content: pending is None, returning", file=sys.stderr)
             return
         
-        # 重新渲染Markdown
-        renderer = MarkdownRenderer.get_instance()
-        html_content = renderer.render(self._pending_content)
+        delta = self._pending_content
+        print(f"[DEBUG] _do_update_content: inserting delta='{delta[:50]}...' (len={len(delta)})", file=sys.stderr)
         
-        # 更新显示
+        # 增量更新：直接追加纯文本（不渲染Markdown，避免重复和性能问题）
         if hasattr(self, '_content_text_edit') and self._content_text_edit:
-            self._content_text_edit.setHtml(html_content)
-            # 延迟调整高度
-            from PyQt6.QtCore import QTimer
+            # 首次更新：清空旧的"AI思考中"文本
+            if self._streaming_just_started:
+                print(f"[DEBUG] _do_update_content: first update, clearing text", file=sys.stderr)
+                self._content_text_edit.setPlainText("")
+                self._streaming_just_started = False
+            
+            # 确保光标在末尾
+            cursor = self._content_text_edit.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self._content_text_edit.setTextCursor(cursor)
+            
+            self._content_text_edit.insertPlainText(delta)
+            print(f"[DEBUG] _do_update_content: inserted, now text length={len(self._content_text_edit.toPlainText())}", file=sys.stderr)
+            
+            # 调整高度
             QTimer.singleShot(50, self._adjust_content_height)
         
         self._pending_content = None
@@ -248,10 +299,14 @@ class MessageBubble(QFrame):
         """
         self.is_thinking = is_thinking
         
-        # 更新内容显示
+        # 更新内容显示（统一使用setPlainText以保持纯文本模式）
         if is_thinking:
             self.content = "AI思考中，请稍后......"
-            self._content_text_edit.setText(self.content)
+            self._content_text_edit.setPlainText(self.content)
+        else:
+            # 取消思考状态：重置content，设标志让_do_update_content首次清空显示
+            self.content = ""
+            self._streaming_just_started = True
         
         # 更新样式
         self._update_thinking_style()
@@ -798,19 +853,20 @@ class ChatWidget(QWidget):
                 self._current_ai_bubble.update_content(f"错误: {str(e)}")
             self._enable_send_button()
     
-    def _on_content_update(self, content: str):
-        """处理流式内容更新"""
+    def _on_content_update(self, delta: str):
+        """处理流式内容更新（delta是增量）"""
         if self._current_ai_bubble:
-            # 更新占位消息的内容
-            self._current_ai_bubble.set_thinking_state(False)
-            self._current_ai_bubble.update_content(content)
+            # 只在首次（思考状态）时取消思考状态，避免重复设置导致_streaming_just_started反复为True
+            if self._current_ai_bubble.is_thinking:
+                self._current_ai_bubble.set_thinking_state(False)
+            self._current_ai_bubble.append_content(delta)
             self._scroll_to_bottom()
     
-    def _on_thinking_update(self, thinking_content: str):
-        """处理深度思考内容更新"""
+    def _on_thinking_update(self, delta: str):
+        """处理深度思考内容更新（delta是增量）"""
         if hasattr(self, '_thinking_area') and self._thinking_area:
             try:
-                self._thinking_area.update_content(thinking_content)
+                self._thinking_area.append_content(delta)
             except RuntimeError:
                 # 思考区域已被删除
                 self._thinking_area = None

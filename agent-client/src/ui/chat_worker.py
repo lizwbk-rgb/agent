@@ -120,12 +120,12 @@ class ChatWorker(QThread):
         self.content_update.emit(content)
     
     def _on_thinking_chunk(self, thinking_content: str):
-        """处理思考内容块"""
+        """处理思考内容块（thinking_content是增量）"""
         if self._stop_flag:
             return
         # 累积思考内容
-        self._thinking_content = thinking_content
-        self.thinking_update.emit(thinking_content)
+        self._thinking_content += thinking_content
+        self.thinking_update.emit(thinking_content)  # 只传增量
     
     def stop(self):
         """停止工作线程"""
