@@ -63,6 +63,7 @@ class MainWindow(QMainWindow):
         self.agent = agent or Agent()
         self.current_mode = ChatMode.ASK
         self.settings = QSettings("AgentClient", "MainWindow")
+        self._is_loading_history = False  # 是否正在加载历史会话（防止set_mode创建新临时会话）
         
         self._init_ui()
         self._setup_menu()
@@ -324,10 +325,16 @@ class MainWindow(QMainWindow):
                 if hasattr(self, 'chat_widget'):
                     self.chat_widget.set_workspace_path(old_workspace_path)
         
-        # 新建临时会话（切换模式时清空对话）
-        self.agent.create_new_conversation()
-        self.chat_widget.clear_chat_display()
-        logger.info(f"切换模式时创建新临时会话: {self.agent.current_conversation_id}")
+        # 新建临时会话（切换模式时清空对话，但加载历史会话时不创建）
+        if not self._is_loading_history:
+            # 只有非加载历史会话时才创建新临时会话
+            self.agent.create_new_conversation()
+            self.chat_widget.clear_chat_display()
+            logger.info(f"切换模式时创建新临时会话: {self.agent.current_conversation_id}")
+        else:
+            # 加载历史会话时不创建新会话，只清空显示
+            self.chat_widget.clear_chat_display()
+            logger.info(f"加载历史会话时跳过创建新临时会话，清空显示")
         
         # 更新菜单项状态
         self._update_menu_state()
@@ -700,17 +707,24 @@ class MainWindow(QMainWindow):
         """
         logger.info(f"选择历史会话: {conversation_id}")
         
-        # 加载会话
-        self.agent.load_conversation(conversation_id)
+        # 设置标志，防止set_mode创建新临时会话
+        self._is_loading_history = True
         
-        # 切换到聊天页面
-        self.switch_to_chat_page()
-        
-        # 更新聊天组件的显示
-        if hasattr(self, 'chat_widget'):
-            self.chat_widget.load_conversation_history()
-        
-        self.statusBar().showMessage(f"已加载历史会话: {conversation_id[:8]}")
+        try:
+            # 加载会话
+            self.agent.load_conversation(conversation_id)
+            
+            # 切换到聊天页面
+            self.switch_to_chat_page()
+            
+            # 更新聊天组件的显示
+            if hasattr(self, 'chat_widget'):
+                self.chat_widget.load_conversation_history()
+            
+            self.statusBar().showMessage(f"已加载历史会话: {conversation_id[:8]}")
+        finally:
+            # 恢复标志
+            self._is_loading_history = False
     
     def on_new_conversation(self):
         """处理新对话请求"""

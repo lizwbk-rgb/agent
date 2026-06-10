@@ -736,9 +736,16 @@ class ChatWidget(QWidget):
         self.message_input.clear()
         self.attached_files = {}
 
+        # 立即在会话区显示用户消息
+        self.add_message(display_content, "user")
+        
+        # 异步预取记忆搜索（减少响应延迟）
+        if self.agent:
+            self.agent.prefetch_memories(display_content)
+        
         # 发送信号
         self.message_sent.emit(display_content, "")
-
+        
         # 如果有agent，直接处理（使用流式）
         if self.agent:
             self._process_message_stream(display_content, send_content)
@@ -750,10 +757,7 @@ class ChatWidget(QWidget):
             send_content = display_content
 
         try:
-            # 1. 显示用户消息（使用display_content，含[文件名]）
-            self.add_message(display_content, "user")
-
-            # 2. 显示AI思考中占位消息
+            # 1. 显示AI思考中占位消息（用户消息已在send_message中显示）
             ai_bubble = self.add_message("AI思考中，请稍后......", "assistant", is_thinking=True)
             self._current_ai_bubble = ai_bubble
 
@@ -885,10 +889,10 @@ class ChatWidget(QWidget):
         
         # 如果没有思考区域或已被删除，创建一个
         if need_create:
-            self._thinking_area = ThinkingArea()
-            # 插入到当前AI消息之前
+            self._thinking_area = ThinkingArea(parent=self)
+            # 插入到当前AI消息之后（下面）
             ai_bubble_index = self.messages_layout.indexOf(self._current_ai_bubble)
-            self.messages_layout.insertWidget(ai_bubble_index, self._thinking_area)
+            self.messages_layout.insertWidget(ai_bubble_index + 1, self._thinking_area)
         
         self._thinking_area.show_thinking()
     
@@ -996,11 +1000,22 @@ class ChatWidget(QWidget):
     
     def clear_chat_display(self):
         """清空聊天显示（不显示确认对话框）"""
-        # 清空UI
-        while self.messages_layout.count():
+        # 清空UI（保留最后的stretch项目）
+        # messages_layout的最后一个项目是stretch，不要删除它
+        while self.messages_layout.count() > 1:  # 保留stretch
             item = self.messages_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        
+        # 确保stretch存在（可能被误删）
+        if self.messages_layout.count() == 0:
+            self.messages_layout.addStretch(1)
+        elif self.messages_layout.count() == 1:
+            # 检查最后一个项目是否是stretch
+            last_item = self.messages_layout.itemAt(self.messages_layout.count() - 1)
+            if last_item and last_item.spacerItem() is None:
+                # 最后一个不是stretch，添加stretch
+                self.messages_layout.addStretch(1)
         
         # 清除思考区域引用（组件已被删除）
         self._thinking_area = None
@@ -1027,7 +1042,7 @@ class ChatWidget(QWidget):
             if msg.role == "thinking":
                 # 思考内容：显示在思考区域中，而不是作为普通消息
                 from ui.thinking_area import ThinkingArea
-                thinking_area = ThinkingArea()
+                thinking_area = ThinkingArea(parent=self)
                 thinking_area.set_content(msg.content)
                 thinking_area.set_thinking_finished()
                 thinking_area.collapse()  # 默认折叠，用户可以点击展开
@@ -1038,8 +1053,12 @@ class ChatWidget(QWidget):
                 # 普通消息（user/assistant）：正常显示
                 self.add_message(msg.content, msg.role)
         
-        # 滚动到底部
+        # 滚动到底部（使用QTimer延迟，确保UI更新完成）
         self._scroll_to_bottom()
+        
+        # 额外延迟再滚动一次（确保渲染完成）
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(100, self._scroll_to_bottom)
         
         logger.info(f"已加载会话历史: {len(history)} 条消息")
     
@@ -1165,10 +1184,24 @@ class ChatWidget(QWidget):
         QTimer.singleShot(0, self._do_scroll_to_bottom)
     
     def _do_scroll_to_bottom(self):
-        """执行滚动到底部"""
+        """执行滚动到底部（最新消息处）"""
         scroll_area = self.findChild(QScrollArea)
-        if scroll_area and scroll_area.verticalScrollBar():
-            scroll_area.verticalScrollBar().setValue(scroll_area.verticalScrollBar().maximum())
+        if not scroll_area or not scroll_area.verticalScrollBar():
+            return
+        
+        # 滚动到最新消息（messages_layout的倒数第二个项目，因为最后一个是stretch）
+        # 如果messages_layout中有stretch（在最后），滚动到stretch的y位置，这样最新消息（stretch前一个）会显示在视口底部
+        if self.messages_layout.count() > 1:
+            # 获取倒数第二个项目的widget（最新消息）
+            last_widget_item = self.messages_layout.itemAt(self.messages_layout.count() - 2)
+            if last_widget_item and last_widget_item.widget():
+                last_widget = last_widget_item.widget()
+                # 滚动到该widget的底部
+                scroll_area.ensureWidgetVisible(last_widget, 0, 10)  # yMargin=10确保有边距
+                return
+        
+        # 如果没有项目或stretch，滚动到最大（兼容情况）
+        scroll_area.verticalScrollBar().setValue(scroll_area.verticalScrollBar().maximum())
     
     def render_message(self, text: str) -> str:
         """

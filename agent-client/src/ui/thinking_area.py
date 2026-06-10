@@ -343,4 +343,4 @@ class ThinkingArea(QFrame):
         if self._is_expanded:
             self.content_container.setMaximumHeight(total_height)
         
-        logger.info(f"调整内容高度: {total_height}px")
+        # 日志已去除，避免刷屏

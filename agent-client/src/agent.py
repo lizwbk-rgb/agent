@@ -119,6 +119,9 @@ class Agent:
         # 创建线程池执行器用于异步操作（数据库写入、记忆提取等）
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="AgentAsync")
         
+        # 预取记忆搜索的Future（用于减少响应延迟）
+        self._memory_future: Optional[concurrent.futures.Future] = None
+        
         logger.info(f"Agent初始化完成 - User: {self.user_id}, Mode: {self.current_mode.value}")
     
     def _build_system_prompt(self, custom_prompt: str = None) -> str:
@@ -338,6 +341,34 @@ class Agent:
         return summary
     
     # ==================== 记忆注入 ====================
+    
+    def prefetch_memories(self, query: str):
+        """
+        异步预取记忆搜索结果（减少响应延迟）
+        
+        Args:
+            query: 查询文本
+        """
+        if self._memory_future is not None:
+            # 如果已有预取任务，先取消（简单处理：忽略旧任务）
+            # 这里不取消，只是覆盖
+            pass
+        
+        # 提交异步任务
+        self._memory_future = self._executor.submit(self._search_related_memories_sync, query)
+        logger.info(f"预取记忆搜索已提交: {query[:50]}...")
+    
+    def _search_related_memories_sync(self, query: str) -> str:
+        """
+        同步搜索相关记忆并格式化（供异步调用）
+        
+        Args:
+            query: 查询文本
+            
+        Returns:
+            str: 格式化的记忆上下文
+        """
+        return self._search_related_memories(query)
     
     def _search_related_memories(self, query: str) -> str:
         """
@@ -716,8 +747,22 @@ class Agent:
                 )
                 logger.info(f"异步生成会话标题已提交: {title}")
         
-        # 4. 搜索相关记忆
-        memory_context = self._search_related_memories(user_message)
+        # 4. 搜索相关记忆（优先使用预取结果，否则使用空上下文以减少延迟）
+        memory_context = ""
+        if self._memory_future is not None:
+            # 等待预取结果（最多等待5秒）
+            try:
+                memory_context = self._memory_future.result(timeout=5.0)
+                logger.info(f"使用预取记忆结果（等待完成）")
+            except Exception as e:
+                logger.warning(f"预取记忆失败/超时，使用空记忆上下文: {e}")
+                memory_context = ""  # 直接使用空上下文，不执行同步搜索
+            finally:
+                self._memory_future = None  # 清除预取状态
+        else:
+            # 无预取，使用空上下文（跳过同步搜索以减少延迟）
+            logger.info("无预取记忆，使用空上下文（跳过同步搜索）")
+            memory_context = ""
         
         # 5. 构建消息列表
         context_messages = self._build_context_messages(memory_context)
