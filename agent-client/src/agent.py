@@ -805,9 +805,8 @@ class Agent:
                     # 处理思考内容（如果有）- 通过reasoning_content字段
                     if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                         thinking_parts.append(delta.reasoning_content)
-                        thinking_content = "".join(thinking_parts)
                         if thinking_callback:
-                            thinking_callback(thinking_content)
+                            thinking_callback(delta.reasoning_content)  # 只传增量，而非全部内容
                     
                     # 处理正文内容
                     if delta.content:

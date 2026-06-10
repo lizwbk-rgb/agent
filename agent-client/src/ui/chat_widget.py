@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 class MessageBubble(QFrame):
     """消息气泡组件"""
     
+    # 信号：内容已更新（用于通知父组件滚动到底部）
+    content_updated = pyqtSignal()
+    
     def __init__(
         self,
         content: str,
@@ -251,28 +254,18 @@ class MessageBubble(QFrame):
         
         # 重启计时器（16ms后触发）
         self._update_timer.start(16)
-        
-        # 调试：打印收到的delta长度
-        import sys
-        print(f"[DEBUG] append_content: delta='{delta[:20]}...' (len={len(delta)}), pending_len={len(self._pending_content)}", file=sys.stderr)
     
     def _do_update_content(self):
         """实际执行内容更新（由计时器触发）"""
-        import sys
-        print(f"[DEBUG] _do_update_content called, pending={self._pending_content[:20] if self._pending_content else None}", file=sys.stderr)
-        
         if self._pending_content is None:
-            print(f"[DEBUG] _do_update_content: pending is None, returning", file=sys.stderr)
             return
         
         delta = self._pending_content
-        print(f"[DEBUG] _do_update_content: inserting delta='{delta[:50]}...' (len={len(delta)})", file=sys.stderr)
         
         # 增量更新：直接追加纯文本（不渲染Markdown，避免重复和性能问题）
         if hasattr(self, '_content_text_edit') and self._content_text_edit:
             # 首次更新：清空旧的"AI思考中"文本
             if self._streaming_just_started:
-                print(f"[DEBUG] _do_update_content: first update, clearing text", file=sys.stderr)
                 self._content_text_edit.setPlainText("")
                 self._streaming_just_started = False
             
@@ -282,13 +275,15 @@ class MessageBubble(QFrame):
             self._content_text_edit.setTextCursor(cursor)
             
             self._content_text_edit.insertPlainText(delta)
-            print(f"[DEBUG] _do_update_content: inserted, now text length={len(self._content_text_edit.toPlainText())}", file=sys.stderr)
             
             # 调整高度
             QTimer.singleShot(50, self._adjust_content_height)
         
         self._pending_content = None
         self._update_timer = None
+        
+        # 发出内容更新信号，通知父组件滚动到底部
+        self.content_updated.emit()
     
     def set_thinking_state(self, is_thinking: bool):
         """
@@ -812,10 +807,16 @@ class ChatWidget(QWidget):
             send_content = display_content
 
         try:
+            # 重置思考区引用，让每条新消息创建独立的思考区
+            self._thinking_area = None
+            
             # 1. 显示AI思考中占位消息（用户消息已在send_message中显示）
             ai_bubble = self.add_message("AI思考中，请稍后......", "assistant", is_thinking=True)
             self._current_ai_bubble = ai_bubble
-
+            
+            # 连接内容更新信号，用于自动滚动到底部
+            self._current_ai_bubble.content_updated.connect(self._scroll_to_bottom)
+            
             # 3. 如果启用深度思考，显示思考区域
             if self._deep_think_enabled:
                 self._show_thinking_area()
@@ -860,10 +861,12 @@ class ChatWidget(QWidget):
             if self._current_ai_bubble.is_thinking:
                 self._current_ai_bubble.set_thinking_state(False)
             self._current_ai_bubble.append_content(delta)
-            self._scroll_to_bottom()
+            # 滚动由MessageBubble的content_updated信号触发，此处不再重复滚动
     
     def _on_thinking_update(self, delta: str):
         """处理深度思考内容更新（delta是增量）"""
+        import sys
+        print(f"[DEBUG] _on_thinking_update called, delta_len={len(delta)}, has_thinking_area={hasattr(self, '_thinking_area') and self._thinking_area is not None}", file=sys.stderr)
         if hasattr(self, '_thinking_area') and self._thinking_area:
             try:
                 self._thinking_area.append_content(delta)
@@ -879,6 +882,13 @@ class ChatWidget(QWidget):
         if self._current_ai_bubble:
             self._current_ai_bubble.set_thinking_state(False)
             self._current_ai_bubble.update_content(content)
+        
+        # 断开内容更新信号
+        if self._current_ai_bubble:
+            try:
+                self._current_ai_bubble.content_updated.disconnect(self._scroll_to_bottom)
+            except TypeError:
+                pass  # 信号未连接
         
         # 启用发送按钮
         self._enable_send_button()
@@ -898,6 +908,13 @@ class ChatWidget(QWidget):
             self._current_ai_bubble.set_thinking_state(False)
             self._current_ai_bubble.update_content(f"错误: {error_msg}")
         
+        # 断开内容更新信号
+        if self._current_ai_bubble:
+            try:
+                self._current_ai_bubble.content_updated.disconnect(self._scroll_to_bottom)
+            except TypeError:
+                pass  # 信号未连接
+        
         # 启用发送按钮
         self._enable_send_button()
         
@@ -906,6 +923,8 @@ class ChatWidget(QWidget):
     
     def _on_thinking_started(self):
         """处理思考开始"""
+        import sys
+        print(f"[DEBUG] _on_thinking_started called", file=sys.stderr)
         logger.info("深度思考开始")
         if hasattr(self, '_thinking_area') and self._thinking_area:
             try:
@@ -927,6 +946,8 @@ class ChatWidget(QWidget):
     
     def _show_thinking_area(self):
         """显示思考区域"""
+        import sys
+        print(f"[DEBUG] _show_thinking_area called, deep_think_enabled={self._deep_think_enabled}", file=sys.stderr)
         from ui.thinking_area import ThinkingArea
         
         # 检查是否已有思考区域且未被删除
@@ -946,9 +967,9 @@ class ChatWidget(QWidget):
         # 如果没有思考区域或已被删除，创建一个
         if need_create:
             self._thinking_area = ThinkingArea(parent=self)
-            # 插入到当前AI消息之后（下面）
+            # 插入到当前AI消息之前（上方），让思考过程显示在正式回复之前
             ai_bubble_index = self.messages_layout.indexOf(self._current_ai_bubble)
-            self.messages_layout.insertWidget(ai_bubble_index + 1, self._thinking_area)
+            self.messages_layout.insertWidget(ai_bubble_index, self._thinking_area)
         
         self._thinking_area.show_thinking()
     
@@ -1235,29 +1256,24 @@ class ChatWidget(QWidget):
     
     def _scroll_to_bottom(self):
         """滚动到底部"""
-        # 延迟滚动，确保UI更新完成
+        # 延迟50ms滚动，等待UI高度调整完成
         from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._do_scroll_to_bottom)
+        QTimer.singleShot(50, self._do_scroll_to_bottom)
     
     def _do_scroll_to_bottom(self):
         """执行滚动到底部（最新消息处）"""
+        from PyQt6.QtWidgets import QApplication
+        
         scroll_area = self.findChild(QScrollArea)
         if not scroll_area or not scroll_area.verticalScrollBar():
             return
         
-        # 滚动到最新消息（messages_layout的倒数第二个项目，因为最后一个是stretch）
-        # 如果messages_layout中有stretch（在最后），滚动到stretch的y位置，这样最新消息（stretch前一个）会显示在视口底部
-        if self.messages_layout.count() > 1:
-            # 获取倒数第二个项目的widget（最新消息）
-            last_widget_item = self.messages_layout.itemAt(self.messages_layout.count() - 2)
-            if last_widget_item and last_widget_item.widget():
-                last_widget = last_widget_item.widget()
-                # 滚动到该widget的底部
-                scroll_area.ensureWidgetVisible(last_widget, 0, 10)  # yMargin=10确保有边距
-                return
+        # 处理待处理的事件，确保布局已更新
+        QApplication.processEvents()
         
-        # 如果没有项目或stretch，滚动到最大（兼容情况）
-        scroll_area.verticalScrollBar().setValue(scroll_area.verticalScrollBar().maximum())
+        # 直接滚动到滚动条最大值（最底部）
+        scroll_bar = scroll_area.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
     
     def render_message(self, text: str) -> str:
         """

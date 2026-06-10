@@ -43,6 +43,8 @@ class ThinkingArea(QFrame):
         Args:
             parent: 父组件
         """
+        import sys
+        print(f"[DEBUG] ThinkingArea.__init__ called", file=sys.stderr)
         super().__init__(parent)
         
         self._is_expanded = False
@@ -250,6 +252,8 @@ class ThinkingArea(QFrame):
         Args:
             delta: 新增的思考内容增量
         """
+        import sys
+        print(f"[DEBUG] ThinkingArea.append_content called, delta_len={len(delta)}, isVisible={self.isVisible()}", file=sys.stderr)
         self._has_content = True
         
         # 增量更新：直接追加纯文本（不渲染Markdown，避免重复和性能问题）
@@ -283,6 +287,8 @@ class ThinkingArea(QFrame):
     
     def show_thinking(self):
         """显示思考中状态"""
+        import sys
+        print(f"[DEBUG] ThinkingArea.show_thinking called, isVisible={self.isVisible()}", file=sys.stderr)
         self._has_content = True
         self.show()
         self.loading_label.setText("思考中...")
