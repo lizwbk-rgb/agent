@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget
 )
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QAction, QActionGroup
+from PyQt6.QtGui import QAction, QActionGroup, QIcon
 
 from agent import Agent, ChatMode
 from config import get_config
@@ -76,9 +76,16 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         """初始化UI"""
         # 窗口设置
-        self.setWindowTitle("AI对话客户端")
+        self.setWindowTitle("deepmem0")
         self.setMinimumSize(1200, 800)
         self.resize(1400, 900)
+        
+        # 设置窗口图标
+        icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        else:
+            logger.warning(f"图标文件不存在: {icon_path}")
         
         # 创建堆叠窗口（多页面）
         self.stacked_widget = QStackedWidget()
