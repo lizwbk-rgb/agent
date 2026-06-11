@@ -353,12 +353,26 @@ class MemoryManager:
         self.data_dir = data_dir
         self.use_mem0 = use_mem0 and self._check_mem0_available()
         
-        if self.use_mem0:
-            self.store = self._init_mem0_store()
-            logger.info("使用mem0记忆存储")
-        else:
-            self.store = LocalMemoryStore(data_dir)
-            logger.info("使用本地记忆存储")
+        # 延迟初始化：不在这里创建 store，改为第一次使用时再创建
+        self._store = None
+        self._store_initialized = False
+        
+    def _ensure_store_initialized(self):
+        """确保 store 已初始化（延迟初始化）"""
+        if not self._store_initialized:
+            if self.use_mem0:
+                self._store = self._init_mem0_store()
+                logger.info("使用mem0记忆存储")
+            else:
+                self._store = LocalMemoryStore(self.data_dir)
+                logger.info("使用本地记忆存储")
+            self._store_initialized = True
+            
+    @property
+    def store(self):
+        """获取 store（延迟初始化）"""
+        self._ensure_store_initialized()
+        return self._store
     
     def _check_mem0_available(self) -> bool:
         """检查mem0是否可用"""

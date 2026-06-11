@@ -29,8 +29,8 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QStackedWidget
 )
-from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtGui import QAction, QActionGroup, QIcon
+from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
+from PyQt6.QtGui import QAction, QActionGroup, QIcon, QFont
 
 from agent import Agent, ChatMode
 from config import get_config
@@ -40,6 +40,92 @@ from ui.history_widget import HistoryWidget
 
 # 配置日志
 logger = logging.getLogger(__name__)
+
+
+class InitOverlay(QWidget):
+    """初始化遮罩组件 - 显示半透明遮罩和加载动画"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("init_overlay")
+        self._dot_count = 0
+        self._dot_timer = QTimer(self)
+        self._dot_timer.timeout.connect(self._update_dots)
+        self._init_ui()
+        
+    def _init_ui(self):
+        """初始化UI"""
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(20)
+        
+        self.title_label = QLabel("deepmem0")
+        self.title_label.setObjectName("init_title")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_font = QFont()
+        title_font.setPointSize(24)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        layout.addWidget(self.title_label)
+        
+        self.message_label = QLabel("正在启动应用...")
+        self.message_label.setObjectName("init_message")
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        message_font = QFont()
+        message_font.setPointSize(12)
+        self.message_label.setFont(message_font)
+        layout.addWidget(self.message_label)
+        
+        self.animation_label = QLabel("")
+        self.animation_label.setObjectName("init_animation")
+        self.animation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        animation_font = QFont()
+        animation_font.setPointSize(16)
+        self.animation_label.setFont(animation_font)
+        layout.addWidget(self.animation_label)
+        
+        self.setStyleSheet("""
+            QWidget#init_overlay { background-color: rgba(245, 245, 245, 230); }
+            QLabel#init_title { color: #333333; font-weight: bold; }
+            QLabel#init_message { color: #666666; }
+            QLabel#init_animation { color: #0066cc; font-weight: bold; }
+        """)
+        
+    def set_message(self, message: str):
+        """设置显示的消息"""
+        self.message_label.setText(message)
+        
+    def start_animation(self):
+        """启动动画"""
+        self._dot_count = 0
+        self._dot_timer.start(500)
+        self._update_dots()
+        
+    def stop_animation(self):
+        """停止动画"""
+        self._dot_timer.stop()
+        
+    def _update_dots(self):
+        """更新动画点"""
+        self._dot_count = (self._dot_count + 1) % 4
+        dots = "." * self._dot_count
+        self.animation_label.setText(dots)
+        
+    def showEvent(self, event):
+        """显示事件"""
+        super().showEvent(event)
+        self.start_animation()
+        
+    def hideEvent(self, event):
+        """隐藏事件"""
+        self.stop_animation()
+        super().hideEvent(event)
+        
+    def resizeEvent(self, event):
+        """调整大小事件"""
+        super().resizeEvent(event)
+        if self.parent():
+            self.setGeometry(0, 0, self.parent().width(), self.parent().height())
 
 
 
@@ -55,15 +141,18 @@ class MainWindow(QMainWindow):
         初始化主窗口
         
         Args:
-            agent: Agent实例
+            agent: Agent实例（可以为None，稍后通过set_agent设置）
             parent: 父组件
         """
         super().__init__(parent)
         
-        self.agent = agent or Agent()
+        self.agent = agent
         self.current_mode = ChatMode.ASK
         self.settings = QSettings("AgentClient", "MainWindow")
         self._is_loading_history = False  # 是否正在加载历史会话（防止set_mode创建新临时会话）
+        
+        # 初始化遮罩（先创建，但隐藏）
+        self.init_overlay = None
         
         self._init_ui()
         self._setup_menu()
@@ -72,6 +161,10 @@ class MainWindow(QMainWindow):
         self._load_settings()
         
         logger.info("主窗口初始化完成")
+        
+        # 如果agent为None，显示初始化遮罩
+        if agent is None:
+            self.show_init_overlay(message="正在启动应用...")
     
     def _init_ui(self):
         """初始化UI"""
@@ -119,7 +212,12 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.history_widget)
         
         # 页面2: 记忆管理页面
-        self.memory_widget = MemoryWidget(self.agent.memory_manager, self)
+        if self.agent and hasattr(self.agent, 'memory_manager'):
+            memory_manager = self.agent.memory_manager
+        else:
+            memory_manager = None
+            
+        self.memory_widget = MemoryWidget(memory_manager, self)
         self.memory_widget.memory_deleted.connect(self.on_memory_deleted)
         self.memory_widget.memories_cleared.connect(self.on_memories_cleared)
         self.memory_widget.back_requested.connect(self.switch_to_chat_page)
@@ -238,26 +336,35 @@ class MainWindow(QMainWindow):
         """设置状态栏"""
         statusbar = self.statusBar()
         
-        # 模式标签
+        # 左侧显示临时状态消息（通过showMessage设置）
+        # 右侧永久显示信息标签
+        
+        # 模式标签（右侧永久显示）
         self.mode_label = QLabel("模式: Ask")
-        statusbar.addWidget(self.mode_label)
+        self.mode_label.setStyleSheet("color: #666; padding-right: 10px;")
+        statusbar.addPermanentWidget(self.mode_label)
         
-        # 记忆数量标签
+        # 记忆数量标签（右侧永久显示）
         self.memory_count_label = QLabel("记忆: 0")
-        statusbar.addWidget(self.memory_count_label)
+        self.memory_count_label.setStyleSheet("color: #666; padding-right: 10px;")
+        statusbar.addPermanentWidget(self.memory_count_label)
         
-        # 工作区标签
+        # 工作区标签（右侧永久显示）
         self.workspace_label = QLabel("工作区: 未设置")
-        statusbar.addWidget(self.workspace_label)
+        self.workspace_label.setStyleSheet("color: #666; padding-right: 10px;")
+        statusbar.addPermanentWidget(self.workspace_label)
         
-        # 模型标签
+        # 模型标签（右侧永久显示）
         self.model_label = QLabel("模型: deepseek-v4-pro")
-        statusbar.addWidget(self.model_label)
+        self.model_label.setStyleSheet("color: #666; padding-right: 10px;")
+        statusbar.addPermanentWidget(self.model_label)
         
-        # 深度思考标签
+        # 深度思考标签（右侧永久显示）
         self.thinking_label = QLabel("思考: 关")
-        statusbar.addWidget(self.thinking_label)
+        self.thinking_label.setStyleSheet("color: #666; padding-right: 10px;")
+        statusbar.addPermanentWidget(self.thinking_label)
         
+        # 显示初始状态消息（左侧）
         statusbar.showMessage("就绪")
     
     def _setup_connections(self):
@@ -371,6 +478,75 @@ class MainWindow(QMainWindow):
         
         if hasattr(self, 'clear_workspace_action'):
             self.clear_workspace_action.setEnabled(self.current_mode == ChatMode.CRAFT)
+    
+    def show_init_overlay(self, message: str = "正在初始化..."):
+        """
+        显示初始化遮罩
+        
+        Args:
+            message: 要显示的消息
+        """
+        if self.init_overlay is None:
+            self.init_overlay = InitOverlay(self)
+            
+        self.init_overlay.set_message(message)
+        self.init_overlay.setGeometry(0, 0, self.width(), self.height())
+        self.init_overlay.show()
+        self.init_overlay.raise_()
+        self.init_overlay.start_animation()  # 显式启动动画
+        
+        logger.info(f"显示初始化遮罩: {message}")
+        
+    def hide_init_overlay(self):
+        """隐藏初始化遮罩"""
+        if self.init_overlay:
+            self.init_overlay.stop_animation()  # 停止动画
+            self.init_overlay.hide()
+            logger.info("隐藏初始化遮罩")
+            
+    def set_agent(self, agent: Agent):
+        """
+        设置Agent到窗口
+        
+        Args:
+            agent: Agent实例
+        """
+        self.agent = agent
+        
+        # 更新chat_widget的agent
+        if hasattr(self, 'chat_widget') and self.chat_widget:
+            self.chat_widget.agent = agent
+            
+        # 更新history_widget的agent
+        if hasattr(self, 'history_widget') and self.history_widget:
+            self.history_widget.agent = agent
+            
+        # 更新memory_widget的memory_manager
+        if hasattr(self, 'memory_widget') and self.memory_widget:
+            self.memory_widget.memory_manager = agent.memory_manager
+            # 刷新记忆列表（如果memory_widget当前可见）
+            if self.memory_widget.isVisible():
+                self.memory_widget.refresh_memories()
+            
+        logger.info("Agent已设置到窗口")
+    
+    def resizeEvent(self, event):
+        """调整大小事件"""
+        super().resizeEvent(event)
+        
+        # 调整初始化遮罩大小
+        if self.init_overlay and self.init_overlay.isVisible():
+            self.init_overlay.setGeometry(0, 0, self.width(), self.height())
+    
+    def showEvent(self, event):
+        """显示事件"""
+        super().showEvent(event)
+        logger.info("主窗口已显示（showEvent）")
+    
+    def hideEvent(self, event):
+        """隐藏事件"""
+        super().hideEvent(event)
+        logger.info("主窗口已隐藏（hideEvent）")
     
     def _init_ask_mode_page(self):
         """初始化Ask模式页面（只调用一次）"""

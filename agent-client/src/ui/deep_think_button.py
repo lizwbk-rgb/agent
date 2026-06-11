@@ -42,6 +42,9 @@ class DeepThinkButton(QFrame):
         """
         super().__init__(parent)
         
+        # 设置为无边框，避免显示多余的边框线
+        self.setFrameStyle(QFrame.Shape.NoFrame)
+        
         self._is_enabled = enabled
         
         self.setup_ui()

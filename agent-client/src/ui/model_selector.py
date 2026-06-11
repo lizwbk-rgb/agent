@@ -44,6 +44,9 @@ class ModelSelector(QFrame):
         """
         super().__init__(parent)
         
+        # 设置为无边框，避免显示多余的边框线
+        self.setFrameStyle(QFrame.Shape.NoFrame)
+        
         self.config = get_config()
         self._current_model = current_model or self.config.DEFAULT_MODEL
         

@@ -126,6 +126,7 @@ class MemoryWidget(QWidget):
     memories_cleared = pyqtSignal()    # 记忆清空信号
     memory_selected = pyqtSignal(str)  # 记忆选中信号
     back_requested = pyqtSignal()      # 返回请求信号
+    memories_loaded = pyqtSignal()     # 记忆加载完成信号
     
     def __init__(
         self,
@@ -141,7 +142,7 @@ class MemoryWidget(QWidget):
         """
         super().__init__(parent)
         
-        self.memory_manager = memory_manager or MemoryManager()
+        self.memory_manager = memory_manager  # 可能为 None，稍后通过 set_agent() 设置
         self.memories: List[Memory] = []
         self.system_memories: List[Memory] = []  # 系统提取的记忆
         self.custom_memories: List[Memory] = []  # 用户自定义的记忆
@@ -156,9 +157,10 @@ class MemoryWidget(QWidget):
         self._is_displaying_system = True  # 是否正在渲染系统记忆
         
         self.setup_ui()
-        self.load_memories()
+        # 注意：不在这里调用 load_memories()，改为在 refresh_memories() 中加载
+        # refresh_memories() 会在切换到记忆页面时由 main_window 调用
         
-        logger.info("记忆管理组件初始化完成")
+        logger.info("记忆管理组件初始化完成（未加载记忆）")
     
     def setup_ui(self):
         """设置UI"""
@@ -362,6 +364,10 @@ class MemoryWidget(QWidget):
     
     def load_memories(self):
         """加载记忆列表（异步）"""
+        if self.memory_manager is None:
+            logger.warning("memory_manager 为 None，跳过加载记忆")
+            return
+            
         try:
             # 创建并启动异步工作器
             self.load_worker = MemoryLoadWorker(self.memory_manager)
@@ -389,9 +395,13 @@ class MemoryWidget(QWidget):
                     self.custom_memories.append(memory)
             self.display_memories()
             logger.info(f"异步加载了 {len(self.memories)} 条记忆（系统提取: {len(self.system_memories)}, 用户自定义: {len(self.custom_memories)}）")
+            # 发射记忆加载完成信号
+            self.memories_loaded.emit()
         except Exception as e:
             logger.error(f"处理加载完成的记忆失败: {str(e)}")
             self.show_empty_state()
+            # 即使失败也发射信号（让遮罩可以隐藏）
+            self.memories_loaded.emit()
     
     def _on_memories_load_error(self, error_msg):
         """记忆加载错误回调"""

@@ -434,8 +434,9 @@ class ChatWidget(QWidget):
         
         # 输入区域
         input_container = QFrame()
+        input_container.setObjectName("input_container")
         input_container.setStyleSheet("""
-            QFrame {
+            #input_container {
                 background-color: #fff;
                 border-top: 1px solid #e0e0e0;
             }
